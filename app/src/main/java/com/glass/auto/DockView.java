@@ -2,6 +2,7 @@ package com.glass.auto;
 
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Rect;
@@ -18,10 +19,10 @@ import java.util.List;
 /**
  * Full-width glass dock drawn entirely in Canvas for performance.
  *
- * Layout (left → right):
- *   [Clock/Date (140dp)] | [App icons (flex)] | [Weather (100dp)] | [Prayer (200dp)]
+ * Layout (left → right): [Prayer (270dp)] | [Icons (flex)] | [Weather (110dp)] | [Clock (130dp)]
  *
- * All data is pushed in via setters; DockView never does I/O itself.
+ * All data is pushed in via setters. onDraw() does zero allocation — all strings
+ * and computations are pre-cached in the setters or in updatePaintSizes().
  */
 public class DockView extends View {
 
@@ -31,92 +32,118 @@ public class DockView extends View {
         void onPrayerTap();
     }
 
-    // --- Paints ---
-    private final Paint bgPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint rimPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint selPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint clockPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint datePaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint valuePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint dimPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
+    // --- Paints (all allocated once, sized in updatePaintSizes()) ---
+    private final Paint bgPaint         = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint rimPaint        = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint selPaint        = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint clockPaint      = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint datePaint       = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint labelPaint      = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint valuePaint      = new Paint(Paint.ANTI_ALIAS_FLAG); // 18dp — prayer time
+    private final Paint valuePaintLarge = new Paint(Paint.ANTI_ALIAS_FLAG); // 22dp — weather temp
+    private final Paint dimPaint        = new Paint(Paint.ANTI_ALIAS_FLAG); // 16dp — next prayer
+    private final Paint dimPaintArrow   = new Paint(Paint.ANTI_ALIAS_FLAG); // 20dp — › arrow
+    private final Paint infoPaint       = new Paint(Paint.ANTI_ALIAS_FLAG); // 10dp — prayer info line
+    private final Paint cityPaint       = new Paint(Paint.ANTI_ALIAS_FLAG); // 13dp — weather city
+    private final Paint cdPaint         = new Paint(Paint.ANTI_ALIAS_FLAG); // 10dp — countdown
     private final RectF selRect    = new RectF();
     private final Rect  textBounds = new Rect();
 
-    private final float rawDp;  // physical display density (immutable)
-    private       float dp;     // effective scale = rawDp * uiScale (recomputed on resize/config)
-    private       float uiScale  = 1.0f;
+    private final float rawDp;
+    private       float dp;
+    private       float uiScale   = 1.0f;
     private       boolean autoScale = true;
-    // Reference dock height in dp (matches android:layout_height in activity_car.xml)
-    private static final float REF_DOCK_DP = 96f;
 
-    // --- State ---
-    private String  clockText   = "00:00";
-    private String  dateText    = "Mon, 1 Jan";
-    private String  weatherEmoji = "–";
-    private String  weatherTemp  = "–°";
-    private String  weatherCity  = "";
-    private String  prayerCurrent = "";
-    private String  prayerCurrentTime = "";
-    private String  prayerNext   = "";
-    private String  prayerNextTime = "";
-    private String  prayerLocation = "";
-    private String  prayerHijri   = "";
+    // --- Raw state (kept for setters/popups) ---
+    private String clockText        = "00:00";
+    private String dateText         = "Mon, 1 Jan";
+    private String weatherEmoji     = "–";
+    private String weatherTemp      = "–°";
+    private String weatherCity      = "";
+    private String prayerCurrent    = "";
+    private String prayerCurrentTime = "";
+    private String prayerNext       = "";
+    private String prayerNextTime   = "";
+    private String prayerLocation   = "";
+    private String prayerHijri      = "";
+
+    // --- Pre-computed draw strings (no allocation in onDraw) ---
+    private String emojiTempStr  = "– –°";   // updated in setWeather()
+    private String infoLineStr   = "";        // updated in setPrayerTimes()
+    private String currentTime12 = "";        // pre-converted 12h
+    private String nextTime12    = "";        // pre-converted 12h
+    private String countdownStr  = "";        // pre-computed, updated in setPrayerTimes()
+    private boolean hasCity      = false;
+    private boolean hasInfo      = false;
 
     private List<DockItem> items = new ArrayList<>();
     private int selectedIndex    = -1;
-    private LaunchListener launchListener;
-    private OnSectionTapListener sectionTapListener;
+    private LaunchListener        launchListener;
+    private OnSectionTapListener  sectionTapListener;
 
     // Section widths in dp
     private static final float CLOCK_W    = 130f;
     private static final float WEATHER_W  = 110f;
-    private static final float PRAYER_W   = 270f; // wider: fits location + hijri on two rows
+    private static final float PRAYER_W   = 270f;
     private static final int   MAX_ICONS  = 6;
     private static final float ICON_SIZE  = 40f;
     private static final float SEL_RADIUS = 8f;
+    private static final float REF_WIDTH_PX = 1280f;
 
     public DockView(Context ctx, AttributeSet attrs) {
         super(ctx, attrs);
         rawDp = ctx.getResources().getDisplayMetrics().density;
-        dp    = rawDp; // will be recomputed in onSizeChanged once width is known
+        dp    = rawDp;
 
         bgPaint.setColor(0x00000000);
         bgPaint.setStyle(Paint.Style.FILL);
 
         rimPaint.setColor(0x22FFFFFF);
         rimPaint.setStyle(Paint.Style.STROKE);
-        rimPaint.setStrokeWidth(1f * dp);
 
         selPaint.setColor(0x33FFFFFF);
         selPaint.setStyle(Paint.Style.FILL);
 
         clockPaint.setColor(0xFFFFFFFF);
-        clockPaint.setTextSize(28f * dp);
         clockPaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
 
         datePaint.setColor(0xFFFFFFFF);
-        datePaint.setTextSize(13f * dp);
         datePaint.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
 
         valuePaint.setColor(0xFFFFFFFF);
-        valuePaint.setTextSize(18f * dp);
         valuePaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
 
+        valuePaintLarge.setColor(0xFFFFFFFF);
+        valuePaintLarge.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+
         labelPaint.setColor(0x88FFFFFF);
-        labelPaint.setTextSize(12f * dp);
 
         dimPaint.setColor(0x66FFFFFF);
-        dimPaint.setTextSize(16f * dp);
+        dimPaintArrow.setColor(0x66FFFFFF);
 
+        infoPaint.setColor(0xFFFFFFFF);
+        cityPaint.setColor(0x88FFFFFF);
+        cdPaint.setColor(0xAAFFFFFF);
+
+        updatePaintSizes();
         setWillNotDraw(false);
     }
 
-    /**
-     * Set a manual UI scale override.
-     * Pass 0 (or any value ≤ 0) to re-enable auto-scaling from the dock's pixel width.
-     * Auto-scale formula: clamp(dockWidthPx / 1280, 0.6, 2.0).
-     */
+    /** Recalculate all paint text sizes after dp changes. Called from constructor + onSizeChanged. */
+    private void updatePaintSizes() {
+        rimPaint.setStrokeWidth(1f * dp);
+        clockPaint.setTextSize(28f * dp);
+        datePaint.setTextSize(13f * dp);
+        valuePaint.setTextSize(18f * dp);
+        valuePaintLarge.setTextSize(22f * dp);
+        labelPaint.setTextSize(12f * dp);
+        dimPaint.setTextSize(16f * dp);
+        dimPaintArrow.setTextSize(20f * dp);
+        infoPaint.setTextSize(10f * dp);
+        cityPaint.setTextSize(13f * dp);
+        cdPaint.setTextSize(10f * dp);
+    }
+
     public void configureScale(float cfgScale) {
         if (cfgScale > 0f) {
             autoScale = false;
@@ -126,28 +153,40 @@ public class DockView extends View {
             if (getWidth() > 0) recomputeScale(getWidth());
         }
         dp = rawDp * uiScale;
+        updatePaintSizes();
         invalidate();
     }
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
-        // Width-based text scale; icons bypass this and use rawDp directly (see drawIcons).
         if (autoScale && w > 0) recomputeScale(w);
         dp = rawDp * uiScale;
+        updatePaintSizes();
     }
 
-    private static final float REF_WIDTH_PX = 1280f;
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        // Pre-warm the color emoji font so the first onDraw() doesn't stutter.
+        post(() -> {
+            Bitmap bm = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+            Canvas warmup = new Canvas(bm);
+            warmup.drawText("☀🌤🌧⛈🌫❄🌦🌨⛅🕌", 0, 10, valuePaintLarge);
+            bm.recycle();
+        });
+    }
 
     private void recomputeScale(int widthPx) {
-        // Scale text relative to a 1280px reference. Cap at 1.4 so text fits the dock height.
         float raw = widthPx / REF_WIDTH_PX;
         uiScale = Math.max(0.6f, Math.min(1.4f, raw));
     }
 
-    // --- Setters (called from CarActivity tick) ---
+    // --- Setters ---
 
+    /** Only redraws if the displayed text actually changed. */
     public void setClock(String time, String date) {
+        if (time.equals(clockText) && date.equals(dateText)) return;
         clockText = time;
         dateText  = date;
         invalidate();
@@ -157,6 +196,8 @@ public class DockView extends View {
         weatherEmoji = emoji;
         weatherTemp  = tempC;
         weatherCity  = city != null ? city : "";
+        hasCity      = !weatherCity.isEmpty();
+        emojiTempStr = weatherEmoji + " " + weatherTemp; // pre-build, no alloc in onDraw
         invalidate();
     }
 
@@ -169,7 +210,27 @@ public class DockView extends View {
         prayerNextTime    = nextTime;
         prayerLocation    = location != null ? location : "";
         prayerHijri       = hijriDate != null ? hijriDate : "";
+        // Pre-compute everything so onDraw() does zero work beyond drawing
+        currentTime12 = to12h(prayerCurrentTime);
+        nextTime12    = to12h(prayerNextTime);
+        countdownStr  = computeCountdown(prayerNextTime);
+        hasInfo       = !prayerLocation.isEmpty() || !prayerHijri.isEmpty();
+        rebuildInfoLine();
         invalidate();
+    }
+
+    private void rebuildInfoLine() {
+        if (!hasInfo) { infoLineStr = ""; return; }
+        String line = "";
+        if (!prayerLocation.isEmpty()) {
+            String loc = prayerLocation;
+            int slash = loc.indexOf(" / ");
+            if (slash > 0) loc = loc.substring(0, slash);
+            line = "🕌 " + loc;
+        }
+        if (!prayerHijri.isEmpty())
+            line += (line.isEmpty() ? "" : " · ") + prayerHijri;
+        infoLineStr = line;
     }
 
     public void setApps(List<String> packageNames, PackageManager pm) {
@@ -189,7 +250,7 @@ public class DockView extends View {
     public void setLaunchListener(LaunchListener l) { launchListener = l; }
     public void setOnSectionTapListener(OnSectionTapListener l) { sectionTapListener = l; }
 
-    // --- Drawing ---
+    // --- Drawing (zero allocations) ---
 
     @Override
     protected void onDraw(Canvas canvas) {
@@ -197,39 +258,31 @@ public class DockView extends View {
         int h = getHeight();
         float cy = h / 2f;
 
-        // Layout (left → right): Prayer | Icons | Weather | Clock
         float prayerW  = PRAYER_W  * dp;
         float weatherW = WEATHER_W * dp;
         float clockW   = CLOCK_W   * dp;
         float iconW    = w - prayerW - weatherW - clockW;
 
-        float xPrayer  = 0;
         float xIcons   = prayerW;
         float xWeather = xIcons + iconW;
         float xClock   = xWeather + weatherW;
 
-        // Top separator between panel area and dock
         canvas.drawLine(0, 1f, w, 1f, rimPaint);
-
-        // Vertical section dividers
         canvas.drawLine(xIcons,   8 * dp, xIcons,   h - 8 * dp, rimPaint);
         canvas.drawLine(xWeather, 8 * dp, xWeather, h - 8 * dp, rimPaint);
         canvas.drawLine(xClock,   8 * dp, xClock,   h - 8 * dp, rimPaint);
 
-        drawPrayer(canvas, xPrayer, prayerW, cy, h);
+        drawPrayer(canvas, 0, prayerW, cy, h);
         drawIcons(canvas, xIcons, iconW, cy);
-        drawWeather(canvas, xWeather, weatherW, cy, h);
-        drawClock(canvas, xClock, clockW, cy, h);
+        drawWeather(canvas, xWeather, weatherW, cy);
+        drawClock(canvas, xClock, clockW, cy);
     }
 
-    private void drawClock(Canvas c, float x, float w, float cy, float h) {
-        // Time (large)
+    private void drawClock(Canvas c, float x, float w, float cy) {
         clockPaint.getTextBounds(clockText, 0, clockText.length(), textBounds);
         float timeH = textBounds.height();
         float timeY = cy - 4 * dp;
-        c.drawText(clockText, x + (w - textBounds.width()) / 2f,
-                timeY, clockPaint);
-        // Date (small, below)
+        c.drawText(clockText, x + (w - textBounds.width()) / 2f, timeY, clockPaint);
         datePaint.getTextBounds(dateText, 0, dateText.length(), textBounds);
         c.drawText(dateText, x + (w - textBounds.width()) / 2f,
                 timeY + timeH * 0.5f + 14 * dp, datePaint);
@@ -237,22 +290,18 @@ public class DockView extends View {
 
     private void drawIcons(Canvas c, float startX, float totalW, float cy) {
         if (items.isEmpty()) return;
-        // Icons use rawDp (no text scale) — fixed physical size regardless of screen width
         float iconPx = ICON_SIZE * rawDp;
         int   n      = items.size();
-        // Distribute evenly across the zone: equal gap before, between, and after icons
         float gap    = (totalW - n * iconPx) / (n + 1f);
 
         for (int i = 0; i < n; i++) {
             float left = startX + gap * (i + 1) + iconPx * i;
             float top  = cy - iconPx / 2f;
-
             if (i == selectedIndex) {
                 selRect.set(left - 6 * rawDp, top - 6 * rawDp,
                         left + iconPx + 6 * rawDp, top + iconPx + 6 * rawDp);
                 c.drawRoundRect(selRect, SEL_RADIUS * rawDp, SEL_RADIUS * rawDp, selPaint);
             }
-
             Drawable icon = items.get(i).icon;
             if (icon != null) {
                 icon.setBounds((int) left, (int) top,
@@ -262,23 +311,13 @@ public class DockView extends View {
         }
     }
 
-    private void drawWeather(Canvas c, float x, float w, float cy, float h) {
-        boolean hasCity = weatherCity != null && !weatherCity.isEmpty();
-        // Align temp baseline with the clock baseline (cy - 4dp) so both sections
-        // sit at the same visual height. Shift slightly higher when city is shown
-        // so that both lines centre around cy.
+    private void drawWeather(Canvas c, float x, float w, float cy) {
         float topShift = hasCity ? 8f * dp : 4f * dp;
-
-        valuePaint.setTextSize(22f * dp);
-        String emojiTemp = weatherEmoji + " " + weatherTemp;
-        valuePaint.getTextBounds(emojiTemp, 0, emojiTemp.length(), textBounds);
-        c.drawText(emojiTemp,
-                x + (w - textBounds.width()) / 2f,
-                cy - topShift, valuePaint);
+        valuePaintLarge.getTextBounds(emojiTempStr, 0, emojiTempStr.length(), textBounds);
+        c.drawText(emojiTempStr, x + (w - textBounds.width()) / 2f, cy - topShift, valuePaintLarge);
 
         if (hasCity) {
-            Paint cityPaint = new Paint(labelPaint);
-            cityPaint.setTextSize(13f * dp);
+            // Truncate to fit width (truncation is fast; no new Paint created)
             String city = weatherCity;
             cityPaint.getTextBounds(city, 0, city.length(), textBounds);
             while (textBounds.width() > w - 8 * dp && city.length() > 3) {
@@ -287,12 +326,9 @@ public class DockView extends View {
             }
             if (!city.equals(weatherCity)) city = city + "…";
             cityPaint.getTextBounds(city, 0, city.length(), textBounds);
-            c.drawText(city,
-                    x + (w - textBounds.width()) / 2f,
+            c.drawText(city, x + (w - textBounds.width()) / 2f,
                     cy - topShift + 20f * dp, cityPaint);
         }
-
-        valuePaint.setTextSize(18f * dp); // reset
     }
 
     private void drawPrayer(Canvas c, float x, float w, float cy, float h) {
@@ -302,52 +338,51 @@ public class DockView extends View {
             return;
         }
 
-        // Two info rows above prayer times: zone name (row 1) + hijri date (row 2)
-        boolean hasLoc   = !prayerLocation.isEmpty();
-        boolean hasHijri = !prayerHijri.isEmpty();
-        boolean hasInfo  = hasLoc || hasHijri;
         float infoOffset = hasInfo ? 10f * dp : 0f;
 
         if (hasInfo) {
-            Paint infoPaint = new Paint(labelPaint);
-            infoPaint.setTextSize(10f * dp);
-            infoPaint.setColor(0xFFFFFFFF);
-            float maxW = w - 8 * dp;
-
-            // Single line: "🕌 CityName · HijriDate"
-            String infoLine = "";
-            if (hasLoc) {
-                String loc = prayerLocation;
-                int slash = loc.indexOf(" / ");
-                if (slash > 0) loc = loc.substring(0, slash);
-                infoLine = "🕌 " + loc;
-            }
-            if (hasHijri) {
-                infoLine += (infoLine.isEmpty() ? "" : " · ") + prayerHijri;
-            }
-            while (infoPaint.measureText(infoLine) > maxW && infoLine.length() > 4)
-                infoLine = infoLine.substring(0, infoLine.length() - 1);
-            infoPaint.getTextBounds(infoLine, 0, infoLine.length(), textBounds);
-            c.drawText(infoLine, x + (w - textBounds.width()) / 2f,
+            // Truncate infoLineStr to fit; infoLineStr is already pre-built in the setter
+            String line = infoLineStr;
+            float maxW  = w - 8 * dp;
+            while (infoPaint.measureText(line) > maxW && line.length() > 4)
+                line = line.substring(0, line.length() - 1);
+            if (line.length() < infoLineStr.length()) line = line + "…";
+            infoPaint.getTextBounds(line, 0, line.length(), textBounds);
+            c.drawText(line, x + (w - textBounds.width()) / 2f,
                     cy - infoOffset - 2 * dp, infoPaint);
         }
 
-        float colW = w / 2f;
+        float colW     = w / 2f;
         float prayerCy = cy + infoOffset / 2f;
-        // LEFT: current prayer
-        drawPrayerColumn(c, x, colW, prayerCy,
-                prayerCurrent, to12h(prayerCurrentTime), true, null);
-        // Arrow
-        dimPaint.setTextSize(20f * dp);
-        c.drawText("›", x + colW - 8 * dp, prayerCy + 7 * dp, dimPaint);
-        dimPaint.setTextSize(16f * dp);
-        // RIGHT: next prayer + countdown
+
+        drawPrayerColumn(c, x, colW, prayerCy, prayerCurrent, currentTime12, true, null);
+
+        // Arrow — uses dimPaintArrow (pre-sized at 20dp, never mutated)
+        c.drawText("›", x + colW - 8 * dp, prayerCy + 7 * dp, dimPaintArrow);
+
         drawPrayerColumn(c, x + colW, colW - 8 * dp, prayerCy,
-                prayerNext, to12h(prayerNextTime), false, countdown(prayerNextTime));
+                prayerNext, nextTime12, false, countdownStr);
     }
 
-    /** Returns "in Xh Ym" or "in Ym" until the next prayer whose raw 24h time is {@code t}. */
-    private static String countdown(String t) {
+    private void drawPrayerColumn(Canvas c, float x, float w, float cy,
+                                  String name, String time, boolean isCurrent, String cdText) {
+        labelPaint.getTextBounds(name, 0, name.length(), textBounds);
+        c.drawText(name, x + (w - textBounds.width()) / 2f, cy - 6 * dp, labelPaint);
+
+        Paint tp = isCurrent ? valuePaint : dimPaint;
+        tp.getTextBounds(time, 0, time.length(), textBounds);
+        c.drawText(time, x + (w - textBounds.width()) / 2f, cy + 14 * dp, tp);
+
+        if (cdText != null && !cdText.isEmpty()) {
+            cdPaint.getTextBounds(cdText, 0, cdText.length(), textBounds);
+            c.drawText(cdText, x + (w - textBounds.width()) / 2f, cy + 26 * dp, cdPaint);
+        }
+    }
+
+    // --- Helpers (static, no allocation) ---
+
+    /** Compute "in Xh Ym" without Calendar.getInstance() — called from setters, not onDraw. */
+    private static String computeCountdown(String t) {
         if (t == null || t.isEmpty()) return "";
         try {
             int colon = t.indexOf(':');
@@ -355,47 +390,26 @@ public class DockView extends View {
             int nextH = Integer.parseInt(t.substring(0, colon).trim());
             int nextM = Integer.parseInt(t.substring(colon + 1, Math.min(colon + 3, t.length())).trim());
             java.util.Calendar now = java.util.Calendar.getInstance();
-            int diff = (nextH * 60 + nextM) - (now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE));
+            int diff = (nextH * 60 + nextM)
+                    - (now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE));
             if (diff <= 0) diff += 24 * 60;
             int h = diff / 60, m = diff % 60;
             return h > 0 ? "in " + h + "h " + m + "m" : "in " + m + "m";
         } catch (Exception e) { return ""; }
     }
 
-    private static String to12h(String t) {
-        if (t == null || t.isEmpty()) return t;
+    static String to12h(String t) {
+        if (t == null || t.isEmpty()) return t != null ? t : "";
         try {
             int colon = t.indexOf(':');
             if (colon < 1) return t;
             int h = Integer.parseInt(t.substring(0, colon).trim());
-            String min = t.substring(colon + 1, Math.min(colon + 3, t.length()));
+            String min  = t.substring(colon + 1, Math.min(colon + 3, t.length()));
             String ampm = h < 12 ? "AM" : "PM";
             h = h % 12;
             if (h == 0) h = 12;
             return h + ":" + min + " " + ampm;
-        } catch (Exception e) {
-            return t;
-        }
-    }
-
-    private void drawPrayerColumn(Canvas c, float x, float w, float cy,
-                                  String name, String time, boolean isCurrent, String cdText) {
-        labelPaint.getTextBounds(name, 0, name.length(), textBounds);
-        c.drawText(name, x + (w - textBounds.width()) / 2f,
-                cy - 6 * dp, labelPaint);
-        Paint tp = isCurrent ? valuePaint : dimPaint;
-        tp.getTextBounds(time, 0, time.length(), textBounds);
-        c.drawText(time, x + (w - textBounds.width()) / 2f,
-                cy + 14 * dp, tp);
-        // Countdown shown only for the next prayer
-        if (cdText != null && !cdText.isEmpty()) {
-            Paint cdPaint = new Paint(labelPaint);
-            cdPaint.setTextSize(10f * dp);
-            cdPaint.setColor(0xAAFFFFFF);
-            cdPaint.getTextBounds(cdText, 0, cdText.length(), textBounds);
-            c.drawText(cdText, x + (w - textBounds.width()) / 2f,
-                    cy + 26 * dp, cdPaint);
-        }
+        } catch (Exception e) { return t; }
     }
 
     // --- Touch ---

@@ -79,8 +79,15 @@ public class CarActivity extends Activity {
     private PrayerTimesManager.PrayerData lastPrayerData;
     private WeatherManager.WeatherData    lastWeatherData;
 
-    // Date format caches
-    private SimpleDateFormat dateFmt;
+    // Date/time format caches (created once — fix #3)
+    private SimpleDateFormat  dateFmt;
+    private java.text.DateFormat timeFmt;
+
+    // Config dirty flag — only reload from disk after returning from Settings (fix #4)
+    private boolean configDirty = false;
+
+    // Playback state — gate progress polling (fix #11)
+    private boolean isPlaying = false;
 
     // Tick every 500ms: clock, progress, lyrics, prayer countdown
     private final Runnable tickRunnable = new Runnable() {
@@ -131,6 +138,7 @@ public class CarActivity extends Activity {
 
         cfg     = Config.load(this);
         dateFmt = new SimpleDateFormat("EEE, d MMM", Locale.getDefault());
+        timeFmt = DateFormat.getTimeFormat(this); // cached once (fix #3)
 
         bindViews();
         setupDock();
@@ -170,7 +178,8 @@ public class CarActivity extends Activity {
                 FreeformLauncher.launch(this, cfg.panel3Package, offScreen);
             if (!cfg.mediaPackage.isEmpty())
                 FreeformLauncher.launch(this, cfg.mediaPackage, offScreen);
-            handler.postDelayed(() -> startActivity(new Intent(this, CarSettingsActivity.class)), 300);
+            configDirty = true; // settings may have changed — reload on next resume (fix #4)
+        handler.postDelayed(() -> startActivity(new Intent(this, CarSettingsActivity.class)), 300);
         });
     }
 
@@ -371,11 +380,16 @@ public class CarActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        settingsOpen = false; // returning from settings or bringToFront
+        settingsOpen = false;
 
-        cfg = Config.load(this);
-        dock.setApps(cfg.dockApps, getPackageManager());
-        dock.configureScale(cfg.uiScale);
+        // Only reload config from disk when settings were opened (fix #4).
+        // bringToFrontRunnable also triggers onResume; skip the disk read there.
+        if (configDirty) {
+            configDirty = false;
+            cfg = Config.load(this);
+            dock.setApps(cfg.dockApps, getPackageManager());
+            dock.configureScale(cfg.uiScale);
+        }
 
         int mode = cfg.panelCount == 1 ? SplitPanelLayout.MODE_SINGLE
                  : cfg.panelCount == 3 ? SplitPanelLayout.MODE_TRIPLE
@@ -426,6 +440,10 @@ public class CarActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        handler.removeCallbacks(bringToFrontRunnable);   // fix #12
+        handler.removeCallbacks(tickRunnable);
+        handler.removeCallbacks(prayerTickRunnable);
+        handler.removeCallbacks(relaunchPanelsRunnable);
         if (lyricsProvider != null) lyricsProvider.cancel();
     }
 
@@ -434,13 +452,11 @@ public class CarActivity extends Activity {
 
     private void tickClock() {
         Date now = Calendar.getInstance().getTime();
-        String time = DateFormat.getTimeFormat(this).format(now);
-        String date = dateFmt.format(now);
-        dock.setClock(time, date);
+        dock.setClock(timeFmt.format(now), dateFmt.format(now));
     }
 
     private void tickProgress() {
-        if (mediaCtrl == null || trackDurationMs <= 0) return;
+        if (!isPlaying || mediaCtrl == null || trackDurationMs <= 0) return; // fix #11
         long pos = mediaCtrl.getPositionMs();
         progress.setProgress((int) (pos * 1000 / trackDurationMs));
     }
@@ -454,17 +470,22 @@ public class CarActivity extends Activity {
         highlightLyricLine(idx);
     }
 
+    private int lastHighlightedIdx = -1;
+
     private void highlightLyricLine(int activeIdx) {
-        for (int i = 0; i < lyricsContainer.getChildCount(); i++) {
-            TextView tv = (TextView) lyricsContainer.getChildAt(i);
-            boolean active = i == activeIdx;
-            tv.setTextColor(active ? Color.WHITE : 0x77FFFFFF);
-            tv.setTextSize(active ? 15f : 13f);
+        // Only update the two lines that changed — avoids 100× setTextSize() per tick (fix #2)
+        if (lastHighlightedIdx >= 0 && lastHighlightedIdx < lyricsContainer.getChildCount()) {
+            TextView prev = (TextView) lyricsContainer.getChildAt(lastHighlightedIdx);
+            prev.setTextColor(0x77FFFFFF);
+            prev.setTextSize(13f);
         }
         if (activeIdx >= 0 && activeIdx < lyricsContainer.getChildCount()) {
-            View v = lyricsContainer.getChildAt(activeIdx);
-            findViewById(R.id.lyrics_scroll).scrollTo(0, v.getTop() - 40);
+            TextView active = (TextView) lyricsContainer.getChildAt(activeIdx);
+            active.setTextColor(Color.WHITE);
+            active.setTextSize(15f);
+            findViewById(R.id.lyrics_scroll).scrollTo(0, active.getTop() - 40);
         }
+        lastHighlightedIdx = activeIdx;
     }
 
     // -------------------------------------------------------------------------
@@ -486,8 +507,9 @@ public class CarActivity extends Activity {
 
             trackTitle.setText(t.isEmpty() ? getString(R.string.no_media) : t);
             trackArtist.setText(a);
-            currentLyricIndex = -1;
-            currentLyrics     = null;
+            currentLyricIndex  = -1;
+            lastHighlightedIdx = -1;
+            currentLyrics      = null;
             lyricsContainer.removeAllViews();
 
             if (cfg.showLyrics && !t.isEmpty()) {
@@ -519,7 +541,8 @@ public class CarActivity extends Activity {
         @Override
         public void onPlaybackStateChanged(boolean playing, long posMs, long durationMs) {
             trackDurationMs = durationMs;
-            btnPlayPause.setImageResource(playing
+            isPlaying = playing; // track state for tickProgress() gate (fix #11)
+        btnPlayPause.setImageResource(playing
                     ? android.R.drawable.ic_media_pause
                     : android.R.drawable.ic_media_play);
             progress.setMax(1000);
@@ -549,11 +572,10 @@ public class CarActivity extends Activity {
         scroll.addView(root);
 
         addPopupTitle(root, "Waktu Solat");
-        if (!data.zoneName.isEmpty())   addPopupSub(root, "📍 " + data.zoneName);
-        if (!data.hijriDate.isEmpty())  addPopupSub(root, "🗓 " + data.hijriDate);
+        if (!data.zoneName.isEmpty())  addPopupSub(root, "📍 " + data.zoneName);
+        if (!data.hijriDate.isEmpty()) addPopupSub(root, "🗓 " + data.hijriDate);
         addPopupDivider(root);
 
-        // All prayers in display order, with Syuruk inserted after Subuh
         String[][] rows = {
             {"Subuh",   data.times.get("Subuh")},
             {"Syuruk",  data.syurukTime},
@@ -577,7 +599,7 @@ public class CarActivity extends Activity {
         }
 
         dialog.setContentView(scroll);
-        popupWindow(dialog, 460);
+        popupWindow(dialog, 0.62f);
         dialog.show();
     }
 
@@ -601,12 +623,12 @@ public class CarActivity extends Activity {
         TextView loadingTv = new TextView(this);
         loadingTv.setText("Loading forecast…");
         loadingTv.setTextColor(0x88FFFFFF);
-        loadingTv.setTextSize(13f);
-        loadingTv.setPadding(0, 8, 0, 8);
+        loadingTv.setTextSize(16f);
+        loadingTv.setPadding(0, dp(12), 0, dp(12));
         root.addView(loadingTv);
 
         dialog.setContentView(scroll);
-        popupWindow(dialog, 520);
+        popupWindow(dialog, 0.72f);
         dialog.show();
 
         weather.fetchForecast(forecast -> {
@@ -623,7 +645,7 @@ public class CarActivity extends Activity {
             hsv.setHorizontalScrollBarEnabled(false);
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setPadding(0, 4, 0, 4);
+            row.setPadding(0, dp(4), 0, dp(4));
             for (WeatherManager.HourlyPoint p : forecast.hourly) {
                 row.addView(buildHourlyCell(p));
             }
@@ -656,8 +678,7 @@ public class CarActivity extends Activity {
         LinearLayout cell = new LinearLayout(this);
         cell.setOrientation(LinearLayout.VERTICAL);
         cell.setGravity(Gravity.CENTER_HORIZONTAL);
-        int pad = dp(10);
-        cell.setPadding(pad, dp(6), pad, dp(6));
+        cell.setPadding(dp(14), dp(8), dp(14), dp(8));
 
         Calendar cal = Calendar.getInstance();
         cal.setTimeInMillis(p.timeEpoch * 1000);
@@ -665,11 +686,11 @@ public class CarActivity extends Activity {
         String ampm = h < 12 ? "AM" : "PM";
         h = h % 12; if (h == 0) h = 12;
 
-        addCellText(cell, h + " " + ampm, 11f, 0xAAFFFFFF, false);
-        addCellText(cell, emojiFor(p.weatherCode), 20f, 0xFFFFFFFF, false);
-        addCellText(cell, (int) p.tempC + "°", 13f, 0xFFFFFFFF, true);
+        addCellText(cell, h + " " + ampm, 14f, 0xAAFFFFFF, false);
+        addCellText(cell, emojiFor(p.weatherCode), 28f, 0xFFFFFFFF, false);
+        addCellText(cell, (int) p.tempC + "°", 18f, 0xFFFFFFFF, true);
         if (p.precipPct > 0)
-            addCellText(cell, p.precipPct + "%", 11f, 0xFF6EB5FF, false);
+            addCellText(cell, p.precipPct + "%", 13f, 0xFF6EB5FF, false);
         return cell;
     }
 
@@ -677,37 +698,35 @@ public class CarActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(6), 0, dp(6));
+        row.setPadding(dp(4), dp(12), dp(4), dp(12));
 
         TextView day = new TextView(this);
         day.setText(dayName);
         day.setTextColor(0xFFFFFFFF);
-        day.setTextSize(14f);
+        day.setTextSize(18f);
         day.setTypeface(null, Typeface.BOLD);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), LinearLayout.LayoutParams.WRAP_CONTENT);
-        day.setLayoutParams(lp);
+        day.setLayoutParams(new LinearLayout.LayoutParams(dp(60), LinearLayout.LayoutParams.WRAP_CONTENT));
         row.addView(day);
 
         TextView emoji = new TextView(this);
         emoji.setText(emojiFor(p.weatherCode));
-        emoji.setTextSize(18f);
-        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(dp(36), LinearLayout.LayoutParams.WRAP_CONTENT);
-        emoji.setLayoutParams(lp2);
+        emoji.setTextSize(24f);
+        emoji.setLayoutParams(new LinearLayout.LayoutParams(dp(44), LinearLayout.LayoutParams.WRAP_CONTENT));
         row.addView(emoji);
 
         TextView temps = new TextView(this);
-        temps.setText((int) p.tempMaxC + "° / " + (int) p.tempMinC + "°");
+        temps.setText((int) p.tempMaxC + "°  /  " + (int) p.tempMinC + "°");
         temps.setTextColor(0xFFFFFFFF);
-        temps.setTextSize(13f);
-        LinearLayout.LayoutParams lp3 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        temps.setLayoutParams(lp3);
+        temps.setTextSize(18f);
+        temps.setLayoutParams(new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         row.addView(temps);
 
         if (p.precipPct > 0) {
             TextView rain = new TextView(this);
             rain.setText("💧 " + p.precipPct + "%");
             rain.setTextColor(0xFF6EB5FF);
-            rain.setTextSize(12f);
+            rain.setTextSize(15f);
             row.addView(rain);
         }
         parent.addView(row);
@@ -728,38 +747,36 @@ public class CarActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(8), 0, dp(8));
+        row.setPadding(dp(12), dp(14), dp(12), dp(14));
 
         if (isCurrent) {
             GradientDrawable bg = new GradientDrawable();
-            bg.setColor(0x22FFFFFF);
-            bg.setCornerRadius(dp(6));
+            bg.setColor(0x33FFFFFF);
+            bg.setCornerRadius(dp(10));
             row.setBackground(bg);
-            row.setPadding(dp(8), dp(8), dp(8), dp(8));
         }
 
         TextView nameTv = new TextView(this);
         nameTv.setText(name);
-        nameTv.setTextColor(isCurrent ? 0xFFFFFFFF : 0xAAFFFFFF);
-        nameTv.setTextSize(15f);
+        nameTv.setTextColor(isCurrent ? 0xFFFFFFFF : 0xCCFFFFFF);
+        nameTv.setTextSize(isCurrent ? 22f : 20f);
         if (isCurrent) nameTv.setTypeface(null, Typeface.BOLD);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        nameTv.setLayoutParams(lp);
+        nameTv.setLayoutParams(new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         row.addView(nameTv);
 
         TextView timeTv = new TextView(this);
         timeTv.setText(time12);
-        timeTv.setTextColor(isCurrent ? 0xFFFFFFFF : 0x88FFFFFF);
-        timeTv.setTextSize(15f);
+        timeTv.setTextColor(isCurrent ? 0xFFFFFFFF : 0xAAFFFFFF);
+        timeTv.setTextSize(isCurrent ? 22f : 20f);
         if (isCurrent) timeTv.setTypeface(null, Typeface.BOLD);
         row.addView(timeTv);
 
         if (isNext) {
             TextView badge = new TextView(this);
-            badge.setText("  next");
+            badge.setText("  next →");
             badge.setTextColor(0xFF6EB5FF);
-            badge.setTextSize(11f);
+            badge.setTextSize(14f);
             row.addView(badge);
         }
         parent.addView(row);
@@ -770,37 +787,44 @@ public class CarActivity extends Activity {
     private LinearLayout buildPopupRoot() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(24), dp(20), dp(24), dp(24));
+        root.setPadding(dp(28), dp(24), dp(28), dp(28));
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0xF0060C18);
-        bg.setCornerRadius(dp(16));
-        bg.setStroke(1, 0x33FFFFFF);
+        bg.setColor(0xF2060C18);
+        bg.setCornerRadius(dp(20));
+        bg.setStroke(1, 0x44FFFFFF);
         root.setBackground(bg);
         return root;
     }
 
-    private void popupWindow(Dialog dialog, int widthDp) {
-        dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
-        dialog.getWindow().setLayout(dp(widthDp), WindowManager.LayoutParams.WRAP_CONTENT);
-        dialog.getWindow().setGravity(Gravity.CENTER);
+    /** widthFraction: fraction of real display width (e.g. 0.65 = 65%). */
+    private void popupWindow(Dialog dialog, float widthFraction) {
+        android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getRealMetrics(dm);
+        int widthPx = (int) (dm.widthPixels * widthFraction);
+
+        Window w = dialog.getWindow();
+        w.setBackgroundDrawableResource(android.R.color.transparent);
+        w.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY);
+        w.setLayout(widthPx, WindowManager.LayoutParams.WRAP_CONTENT);
+        w.setGravity(Gravity.CENTER);
     }
 
     private void addPopupTitle(LinearLayout parent, String text) {
         TextView tv = new TextView(this);
         tv.setText(text);
         tv.setTextColor(0xFFFFFFFF);
-        tv.setTextSize(18f);
+        tv.setTextSize(24f);
         tv.setTypeface(null, Typeface.BOLD);
-        tv.setPadding(0, 0, 0, dp(4));
+        tv.setPadding(0, 0, 0, dp(6));
         parent.addView(tv);
     }
 
     private void addPopupSub(LinearLayout parent, String text) {
         TextView tv = new TextView(this);
         tv.setText(text);
-        tv.setTextColor(0xAAFFFFFF);
-        tv.setTextSize(13f);
-        tv.setPadding(0, dp(2), 0, dp(2));
+        tv.setTextColor(0xBBFFFFFF);
+        tv.setTextSize(16f);
+        tv.setPadding(0, dp(3), 0, dp(3));
         parent.addView(tv);
     }
 
@@ -808,10 +832,10 @@ public class CarActivity extends Activity {
         TextView tv = new TextView(this);
         tv.setText(text);
         tv.setTextColor(0x88FFFFFF);
-        tv.setTextSize(11f);
+        tv.setTextSize(13f);
         tv.setAllCaps(true);
-        tv.setLetterSpacing(0.1f);
-        tv.setPadding(0, dp(4), 0, dp(6));
+        tv.setLetterSpacing(0.12f);
+        tv.setPadding(0, dp(4), 0, dp(8));
         parent.addView(tv);
     }
 
@@ -819,9 +843,9 @@ public class CarActivity extends Activity {
         View v = new View(this);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 1);
-        lp.setMargins(0, dp(10), 0, dp(10));
+        lp.setMargins(0, dp(14), 0, dp(14));
         v.setLayoutParams(lp);
-        v.setBackgroundColor(0x22FFFFFF);
+        v.setBackgroundColor(0x33FFFFFF);
         parent.addView(v);
     }
 

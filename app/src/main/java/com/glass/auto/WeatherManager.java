@@ -87,7 +87,8 @@ public class WeatherManager implements LocationHelper.Listener {
     public interface Listener         { void onWeather(WeatherData data); }
     public interface ForecastListener { void onForecast(ForecastData data); }
 
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService executor        = Executors.newSingleThreadExecutor();
+    private final ExecutorService forecastExecutor = Executors.newSingleThreadExecutor(); // fix #9
     private final Handler         main     = new Handler(Looper.getMainLooper());
     private Context     ctx;
     private Listener    listener;
@@ -129,22 +130,25 @@ public class WeatherManager implements LocationHelper.Listener {
         });
     }
 
-    /** Asynchronously fetches 24h hourly + 7-day daily forecast and current AQI. */
+    private static final int FORECAST_TIMEOUT_MS = 6000; // fix #9
+
+    /** Asynchronously fetches 24h hourly + 7-day daily forecast and current AQI.
+     *  Uses a dedicated executor so forecast requests never delay periodic weather updates. */
     public void fetchForecast(ForecastListener cb) {
-        if (Double.isNaN(cachedLat)) { cb.onForecast(new ForecastData()); return; }
+        if (Double.isNaN(cachedLat)) { main.post(() -> cb.onForecast(new ForecastData())); return; }
         final double lat = cachedLat, lon = cachedLon;
-        executor.execute(() -> {
+        forecastExecutor.execute(() -> {
             ForecastData result = new ForecastData();
             String latS = String.format(Locale.US, "%.4f", lat);
             String lonS = String.format(Locale.US, "%.4f", lon);
             try {
-                String body = get(String.format(FORECAST_API, latS, lonS));
+                String body = getWithTimeout(String.format(FORECAST_API, latS, lonS), FORECAST_TIMEOUT_MS);
                 if (body != null) parseForecast(body, result);
-            } catch (Exception e) { Log.w(TAG, "Forecast fetch error", e); }
+            } catch (Exception e) { Log.w(TAG, "Forecast fetch error: " + e.getMessage()); }
             try {
-                String body = get(String.format(AQI_API, latS, lonS));
+                String body = getWithTimeout(String.format(AQI_API, latS, lonS), FORECAST_TIMEOUT_MS);
                 if (body != null) parseAqi(body, result);
-            } catch (Exception e) { Log.w(TAG, "AQI fetch error", e); }
+            } catch (Exception e) { Log.w(TAG, "AQI fetch error: " + e.getMessage()); }
             main.post(() -> cb.onForecast(result));
         });
     }
@@ -194,6 +198,22 @@ public class WeatherManager implements LocationHelper.Listener {
         aqi.pm25        = (float) current.optDouble("pm2_5", 0);
         aqi.pm10        = (float) current.optDouble("pm10",  0);
         out.aqi = aqi;
+    }
+
+    private String getWithTimeout(String urlStr, int timeoutMs) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+        conn.setRequestProperty("User-Agent", "GlassAuto/1.0");
+        conn.setConnectTimeout(timeoutMs);
+        conn.setReadTimeout(timeoutMs);
+        if (conn.getResponseCode() != 200) { conn.disconnect(); return null; }
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+        }
+        conn.disconnect();
+        return sb.toString();
     }
 
     private String get(String urlStr) throws Exception {
