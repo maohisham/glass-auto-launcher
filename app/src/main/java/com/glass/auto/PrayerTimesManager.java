@@ -53,6 +53,12 @@ public class PrayerTimesManager implements LocationHelper.Listener {
     // Display names matching JAKIM's official Malay terminology
     private static final String[] PRAYER_DISPLAY = {"Subuh", "Zohor", "Asar", "Maghrib", "Isyak"};
 
+    private static final String[] HIJRI_MONTHS = {
+        "Muharram", "Safar", "Rabi'ul Awwal", "Rabi'ul Akhir",
+        "Jamadil Awwal", "Jamadil Akhir", "Rajab", "Sha'ban",
+        "Ramadan", "Syawal", "Zulkaedah", "Zulhijjah"
+    };
+
     public static class PrayerData {
         public Map<String, String> times  = new LinkedHashMap<>();
         public String currentPrayer       = "";
@@ -62,6 +68,7 @@ public class PrayerTimesManager implements LocationHelper.Listener {
         public long   nextPrayerMs        = 0;
         public String zoneName            = "";
         public String zoneCode            = "";
+        public String hijriDate           = ""; // e.g. "10 Rabi'ul Akhir 1446"
     }
 
     public interface Listener {
@@ -169,6 +176,23 @@ public class PrayerTimesManager implements LocationHelper.Listener {
             d.times.put("Asar",    stripTz(t.optString("asr",     "")));
             d.times.put("Maghrib", stripTz(t.optString("maghrib", "")));
             d.times.put("Isyak",   stripTz(t.optString("isha",    "")));
+            // Extract hijri from API response: "01-Rabi'ul Akhir-1446"
+            String rawHijri = t.optString("hijri", "");
+            if (!rawHijri.isEmpty()) {
+                int f = rawHijri.indexOf('-');
+                int l = rawHijri.lastIndexOf('-');
+                if (f > 0 && l > f) {
+                    try {
+                        d.hijriDate = Integer.parseInt(rawHijri.substring(0, f).trim())
+                                + " " + rawHijri.substring(f + 1, l).trim()
+                                + " " + rawHijri.substring(l + 1).trim();
+                    } catch (NumberFormatException ignore) {
+                        d.hijriDate = rawHijri.replace("-", " ").trim();
+                    }
+                } else {
+                    d.hijriDate = rawHijri.trim();
+                }
+            }
             return validate(d) ? d : null;
         } catch (Exception e) {
             Log.w(TAG, "e-Solat parse failed: " + e.getMessage());
@@ -315,7 +339,24 @@ public class PrayerTimesManager implements LocationHelper.Listener {
         if (nextIdx == 0 && currentIdx == mins.length - 1)
             next.add(Calendar.DAY_OF_YEAR, 1);
         d.nextPrayerMs = next.getTimeInMillis();
+
+        // Compute Hijri date from ICU if not supplied by the API
+        if (d.hijriDate.isEmpty()) {
+            d.hijriDate = computeHijriDate();
+        }
         return d;
+    }
+
+    private static String computeHijriDate() {
+        try {
+            android.icu.util.IslamicCalendar ic = new android.icu.util.IslamicCalendar();
+            int day   = ic.get(android.icu.util.Calendar.DAY_OF_MONTH);
+            int month = ic.get(android.icu.util.Calendar.MONTH); // 0-indexed
+            int year  = ic.get(android.icu.util.Calendar.YEAR);
+            return day + " " + HIJRI_MONTHS[month] + " " + year;
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private int parseHHmm(String hhmm) {

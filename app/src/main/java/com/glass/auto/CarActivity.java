@@ -224,8 +224,8 @@ public class CarActivity extends Activity {
         prayer = new PrayerTimesManager();
         prayer.setListener(d -> {
             dock.setPrayerTimes(d.currentPrayer, d.currentTime,
-                    d.nextPrayer, d.nextTime);
-            // Log zone so developer can confirm correct zone was selected
+                    d.nextPrayer, d.nextTime,
+                    d.zoneName, d.hijriDate);
             if (!d.zoneCode.isEmpty())
                 android.util.Log.i("GlassAuto", "Prayer zone: " + d.zoneCode + " — " + d.zoneName);
         });

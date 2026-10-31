@@ -51,6 +51,8 @@ public class DockView extends View {
     private String  prayerCurrentTime = "";
     private String  prayerNext   = "";
     private String  prayerNextTime = "";
+    private String  prayerLocation = "";
+    private String  prayerHijri   = "";
 
     private List<DockItem> items = new ArrayList<>();
     private int selectedIndex    = -1;
@@ -58,8 +60,8 @@ public class DockView extends View {
 
     // Section widths in dp
     private static final float CLOCK_W    = 130f;
-    private static final float WEATHER_W  = 120f; // wider to fit city name
-    private static final float PRAYER_W   = 190f;
+    private static final float WEATHER_W  = 120f;
+    private static final float PRAYER_W   = 230f; // wider to fit location + hijri row
     private static final float ICON_SIZE  = 44f;
     private static final float ICON_PAD   = 10f;
     private static final float SEL_RADIUS = 10f;
@@ -79,21 +81,21 @@ public class DockView extends View {
         selPaint.setStyle(Paint.Style.FILL);
 
         clockPaint.setColor(0xFFFFFFFF);
-        clockPaint.setTextSize(24f * dp);
+        clockPaint.setTextSize(28f * dp);
         clockPaint.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
 
         datePaint.setColor(0x99FFFFFF);
-        datePaint.setTextSize(11f * dp);
+        datePaint.setTextSize(13f * dp);
 
         valuePaint.setColor(0xFFFFFFFF);
-        valuePaint.setTextSize(15f * dp);
+        valuePaint.setTextSize(18f * dp);
         valuePaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
 
         labelPaint.setColor(0x88FFFFFF);
-        labelPaint.setTextSize(10f * dp);
+        labelPaint.setTextSize(12f * dp);
 
         dimPaint.setColor(0x66FFFFFF);
-        dimPaint.setTextSize(13f * dp);
+        dimPaint.setTextSize(16f * dp);
 
         setWillNotDraw(false);
     }
@@ -114,11 +116,14 @@ public class DockView extends View {
     }
 
     public void setPrayerTimes(String current, String currentTime,
-                               String next, String nextTime) {
+                               String next, String nextTime,
+                               String location, String hijriDate) {
         prayerCurrent     = current;
         prayerCurrentTime = currentTime;
         prayerNext        = next;
         prayerNextTime    = nextTime;
+        prayerLocation    = location != null ? location : "";
+        prayerHijri       = hijriDate != null ? hijriDate : "";
         invalidate();
     }
 
@@ -208,34 +213,32 @@ public class DockView extends View {
 
     private void drawWeather(Canvas c, float x, float w, float cy, float h) {
         boolean hasCity = weatherCity != null && !weatherCity.isEmpty();
-        // Shift content up slightly when city name is shown so all three rows fit
-        float topShift = hasCity ? 8f * dp : 0f;
+        float topShift = hasCity ? 11f * dp : 0f;
 
-        // Emoji + temperature on one row (side by side, centred)
-        valuePaint.setTextSize(18f * dp);
+        valuePaint.setTextSize(22f * dp);
         String emojiTemp = weatherEmoji + " " + weatherTemp;
         valuePaint.getTextBounds(emojiTemp, 0, emojiTemp.length(), textBounds);
         c.drawText(emojiTemp,
                 x + (w - textBounds.width()) / 2f,
                 cy - topShift, valuePaint);
 
-        // City name below
         if (hasCity) {
-            labelPaint.getTextBounds(weatherCity, 0, weatherCity.length(), textBounds);
-            // Truncate if too wide for the section
+            Paint cityPaint = new Paint(labelPaint);
+            cityPaint.setTextSize(13f * dp);
             String city = weatherCity;
+            cityPaint.getTextBounds(city, 0, city.length(), textBounds);
             while (textBounds.width() > w - 8 * dp && city.length() > 3) {
                 city = city.substring(0, city.length() - 1);
-                labelPaint.getTextBounds(city + "…", 0, city.length() + 1, textBounds);
+                cityPaint.getTextBounds(city + "…", 0, city.length() + 1, textBounds);
             }
             if (!city.equals(weatherCity)) city = city + "…";
-            labelPaint.getTextBounds(city, 0, city.length(), textBounds);
+            cityPaint.getTextBounds(city, 0, city.length(), textBounds);
             c.drawText(city,
                     x + (w - textBounds.width()) / 2f,
-                    cy - topShift + 16f * dp, labelPaint);
+                    cy - topShift + 22f * dp, cityPaint);
         }
 
-        valuePaint.setTextSize(15f * dp); // reset
+        valuePaint.setTextSize(18f * dp); // reset
     }
 
     private void drawPrayer(Canvas c, float x, float w, float cy, float h) {
@@ -245,26 +248,49 @@ public class DockView extends View {
             return;
         }
 
+        // Top info row: "{location}  ·  {hijriDate}" in 9sp dim text
+        boolean hasInfo = !prayerLocation.isEmpty() || !prayerHijri.isEmpty();
+        float infoOffset = hasInfo ? 14f * dp : 0f;
+
+        if (hasInfo) {
+            Paint infoPaint = new Paint(labelPaint);
+            infoPaint.setTextSize(11f * dp);
+            infoPaint.setColor(0x66FFFFFF);
+            StringBuilder info = new StringBuilder();
+            if (!prayerLocation.isEmpty()) info.append(prayerLocation);
+            if (!prayerLocation.isEmpty() && !prayerHijri.isEmpty()) info.append("  ·  ");
+            if (!prayerHijri.isEmpty()) info.append(prayerHijri);
+            String infoStr = info.toString();
+            // Truncate if wider than section
+            while (infoPaint.measureText(infoStr) > w - 8 * dp && infoStr.length() > 6) {
+                infoStr = infoStr.substring(0, infoStr.length() - 1);
+            }
+            infoPaint.getTextBounds(infoStr, 0, infoStr.length(), textBounds);
+            c.drawText(infoStr,
+                    x + (w - textBounds.width()) / 2f,
+                    cy - infoOffset - 4 * dp,
+                    infoPaint);
+        }
+
         float colW = w / 2f;
+        float prayerCy = cy + infoOffset / 2f; // shift prayer content down when info row present
         // LEFT: current prayer
-        drawPrayerColumn(c, x, colW, cy,
+        drawPrayerColumn(c, x, colW, prayerCy,
                 prayerCurrent, prayerCurrentTime, true);
         // Arrow
+        dimPaint.setTextSize(20f * dp);
+        c.drawText("›", x + colW - 8 * dp, prayerCy + 7 * dp, dimPaint);
         dimPaint.setTextSize(16f * dp);
-        c.drawText("›", x + colW - 8 * dp, cy + 5 * dp, dimPaint);
-        dimPaint.setTextSize(13f * dp);
         // RIGHT: next prayer
-        drawPrayerColumn(c, x + colW, colW - 8 * dp, cy,
+        drawPrayerColumn(c, x + colW, colW - 8 * dp, prayerCy,
                 prayerNext, prayerNextTime, false);
     }
 
     private void drawPrayerColumn(Canvas c, float x, float w, float cy,
                                   String name, String time, boolean isCurrent) {
-        // Name label (small, dim)
         labelPaint.getTextBounds(name, 0, name.length(), textBounds);
         c.drawText(name, x + (w - textBounds.width()) / 2f,
                 cy - 6 * dp, labelPaint);
-        // Time (bold, white if current / dim if next)
         Paint tp = isCurrent ? valuePaint : dimPaint;
         tp.getTextBounds(time, 0, time.length(), textBounds);
         c.drawText(time, x + (w - textBounds.width()) / 2f,
