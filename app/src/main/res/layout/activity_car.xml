@@ -75,7 +75,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_marginTop="48dp"
-        android:layout_marginBottom="72dp">
+        android:layout_marginBottom="80dp">
 
         <!-- Left: map placeholder shown before map app launches -->
         <FrameLayout
@@ -218,11 +218,11 @@
         </LinearLayout>
     </com.glass.auto.SplitPanelLayout>
 
-    <!-- Bottom dock (glass, full width) -->
+    <!-- Bottom dock (glass, full width) — holds clock, apps, weather, prayer -->
     <com.glass.auto.DockView
         android:id="@+id/dock"
         android:layout_width="match_parent"
-        android:layout_height="72dp"
+        android:layout_height="80dp"
         android:layout_gravity="bottom"
         android:background="#CC000000" />
 

@@ -18,17 +18,18 @@ import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import java.text.SimpleDateFormat;
 import java.util.Calendar;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 
 public class CarActivity extends Activity {
 
     // --- Views ---
     private SplitPanelLayout splitPanel;
     private View             mapPanel;
-    private View             divider;
     private View             mapHint;
-    private TextView         clock;
     private TextView         speedLabel;
     private ImageView        albumArt;
     private TextView         trackTitle;
@@ -41,19 +42,24 @@ public class CarActivity extends Activity {
 
     // --- Core ---
     private Config                 cfg;
+    private LocationHelper         location;
     private MediaSessionController mediaCtrl;
     private LyricsProvider         lyricsProvider;
     private SpeedMonitor           speedMonitor;
+    private WeatherManager         weather;
+    private PrayerTimesManager     prayer;
 
-    private final Handler  handler      = new Handler(Looper.getMainLooper());
+    private final Handler handler = new Handler(Looper.getMainLooper());
+
+    // Media state
     private List<LyricsProvider.LyricLine> currentLyrics;
-    private int    currentLyricIndex    = -1;
-    private long   trackDurationMs      = 0;
-    private boolean isPlaying           = false;
-    private String  currentTrack        = "";
-    private String  currentArtist       = "";
+    private int  currentLyricIndex = -1;
+    private long trackDurationMs   = 0;
 
-    // Runnable that ticks the clock and progress bar every second
+    // Date format caches
+    private SimpleDateFormat dateFmt;
+
+    // Tick every 500ms: clock, progress, lyrics, prayer countdown
     private final Runnable tickRunnable = new Runnable() {
         @Override public void run() {
             tickClock();
@@ -63,47 +69,46 @@ public class CarActivity extends Activity {
         }
     };
 
+    // Tick prayer every minute (avoids unnecessary redraws)
+    private final Runnable prayerTickRunnable = new Runnable() {
+        @Override public void run() {
+            prayer.tick();
+            handler.postDelayed(this, 60_000);
+        }
+    };
+
     // -------------------------------------------------------------------------
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Redirect to setup wizard if any permission is missing
         if (!PermissionHelper.allGranted(this)) {
             startActivity(new Intent(this, SetupActivity.class));
             finish();
             return;
         }
 
-        // Fullscreen, keep screen on while driving
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                 | WindowManager.LayoutParams.FLAG_FULLSCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
 
         setContentView(R.layout.activity_car);
 
-        cfg = Config.load(this);
+        cfg     = Config.load(this);
+        dateFmt = new SimpleDateFormat("EEE, d MMM", Locale.getDefault());
 
         bindViews();
         setupDock();
         setupSplitPanel();
         setupMediaControls();
-
-        mediaCtrl    = new MediaSessionController(this);
-        lyricsProvider = new LyricsProvider();
-        speedMonitor = new SpeedMonitor(this);
-
-        mediaCtrl.setListener(mediaListener);
-        speedMonitor.setListener(speedListener);
+        setupManagers();
     }
 
     private void bindViews() {
         splitPanel    = findViewById(R.id.split_panel);
         mapPanel      = findViewById(R.id.map_panel);
-        divider       = findViewById(R.id.divider);
         mapHint       = findViewById(R.id.map_hint);
-        clock         = findViewById(R.id.clock);
         speedLabel    = findViewById(R.id.speed_label);
         albumArt      = findViewById(R.id.album_art);
         trackTitle    = findViewById(R.id.track_title);
@@ -121,8 +126,8 @@ public class CarActivity extends Activity {
     private void setupDock() {
         dock.setApps(cfg.dockApps, getPackageManager());
         dock.setLaunchListener(pkg -> {
-            Intent intent = getPackageManager().getLaunchIntentForPackage(pkg);
-            if (intent != null) startActivity(intent);
+            Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+            if (i != null) startActivity(i);
         });
     }
 
@@ -130,12 +135,9 @@ public class CarActivity extends Activity {
         splitPanel.setRatio(cfg.splitRatio);
         splitPanel.setOnRatioChangedListener(ratio -> {
             cfg.splitRatio = ratio;
-            // Relaunch map app with new bounds after ratio settles
             handler.removeCallbacks(relaunchMapRunnable);
             handler.postDelayed(relaunchMapRunnable, 300);
         });
-
-        // Launch map after the layout has measured so we know the bounds
         splitPanel.getViewTreeObserver().addOnGlobalLayoutListener(
                 new ViewTreeObserver.OnGlobalLayoutListener() {
                     @Override public void onGlobalLayout() {
@@ -148,19 +150,12 @@ public class CarActivity extends Activity {
     private final Runnable relaunchMapRunnable = this::launchMapApp;
 
     private void launchMapApp() {
-        if (cfg.mapPackage.isEmpty()) {
-            mapHint.setVisibility(View.VISIBLE);
-            return;
-        }
+        if (cfg.mapPackage.isEmpty()) { mapHint.setVisibility(View.VISIBLE); return; }
         mapHint.setVisibility(View.GONE);
-
-        // Compute screen-absolute bounds of the map panel
         int[] loc = new int[2];
         mapPanel.getLocationOnScreen(loc);
         Rect bounds = new Rect(loc[0], loc[1],
-                loc[0] + mapPanel.getWidth(),
-                loc[1] + mapPanel.getHeight());
-
+                loc[0] + mapPanel.getWidth(), loc[1] + mapPanel.getHeight());
         FreeformLauncher.launchMap(this, cfg.mapPackage, bounds);
     }
 
@@ -169,12 +164,43 @@ public class CarActivity extends Activity {
         btnNext.setOnClickListener(v -> { if (mediaCtrl != null) mediaCtrl.skipNext(); });
         progress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                if (fromUser && mediaCtrl != null)
+                if (fromUser && mediaCtrl != null && trackDurationMs > 0)
                     mediaCtrl.seekTo((long) p * trackDurationMs / 1000);
             }
             @Override public void onStartTrackingTouch(SeekBar sb) { }
             @Override public void onStopTrackingTouch(SeekBar sb) { }
         });
+    }
+
+    private void setupManagers() {
+        // Shared location provider
+        location = new LocationHelper(this);
+
+        // Speed (separate GPS listener for 1-second updates)
+        speedMonitor = new SpeedMonitor(this);
+        speedMonitor.setListener(speedKmh -> {
+            String val = cfg.speedUnit.equals("mph")
+                    ? String.valueOf((int) (speedKmh * 0.621371f))
+                    : String.valueOf((int) speedKmh);
+            speedLabel.setText(val);
+        });
+
+        // Weather (triggers on location, refreshes every 30 min)
+        weather = new WeatherManager();
+        weather.setListener(d -> dock.setWeather(d.emoji, (int) d.tempC + "°"));
+        location.addListener(weather);
+
+        // Prayer times (triggers on location, ticks every minute)
+        prayer = new PrayerTimesManager();
+        prayer.setListener(d ->
+                dock.setPrayerTimes(d.currentPrayer, d.currentTime,
+                        d.nextPrayer, d.nextTime));
+        location.addListener(prayer);
+
+        // Media
+        mediaCtrl    = new MediaSessionController(this);
+        lyricsProvider = new LyricsProvider();
+        mediaCtrl.setListener(mediaListener);
     }
 
     // -------------------------------------------------------------------------
@@ -186,13 +212,18 @@ public class CarActivity extends Activity {
         ComponentName cn = new ComponentName(this, MediaListenerService.class);
         mediaCtrl.start(cn);
         speedMonitor.start();
+        location.start();
         handler.post(tickRunnable);
+        handler.post(prayerTickRunnable);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         handler.removeCallbacks(tickRunnable);
+        handler.removeCallbacks(prayerTickRunnable);
+        handler.removeCallbacks(relaunchMapRunnable);
+        location.stop();
         speedMonitor.stop();
         mediaCtrl.stop();
     }
@@ -200,7 +231,6 @@ public class CarActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        handler.removeCallbacks(relaunchMapRunnable);
         lyricsProvider.cancel();
     }
 
@@ -208,8 +238,10 @@ public class CarActivity extends Activity {
     // Tick
 
     private void tickClock() {
-        java.util.Date now = Calendar.getInstance().getTime();
-        clock.setText(DateFormat.getTimeFormat(this).format(now));
+        Date now = Calendar.getInstance().getTime();
+        String time = DateFormat.getTimeFormat(this).format(now);
+        String date = dateFmt.format(now);
+        dock.setClock(time, date);
     }
 
     private void tickProgress() {
@@ -234,7 +266,6 @@ public class CarActivity extends Activity {
             tv.setTextColor(active ? Color.WHITE : 0x77FFFFFF);
             tv.setTextSize(active ? 15f : 13f);
         }
-        // Scroll so active line is visible
         if (activeIdx >= 0 && activeIdx < lyricsContainer.getChildCount()) {
             View v = lyricsContainer.getChildAt(activeIdx);
             findViewById(R.id.lyrics_scroll).scrollTo(0, v.getTop() - 40);
@@ -242,23 +273,23 @@ public class CarActivity extends Activity {
     }
 
     // -------------------------------------------------------------------------
-    // Listeners
+    // Media listener
 
     private final MediaSessionController.Listener mediaListener =
             new MediaSessionController.Listener() {
         @Override
         public void onTrackChanged(String title, String artist, Bitmap art) {
-            currentTrack  = title  != null ? title  : "";
-            currentArtist = artist != null ? artist : "";
-            trackTitle.setText(currentTrack.isEmpty() ? getString(R.string.no_media) : currentTrack);
-            trackArtist.setText(currentArtist);
+            String t = title  != null ? title  : "";
+            String a = artist != null ? artist : "";
+            trackTitle.setText(t.isEmpty() ? getString(R.string.no_media) : t);
+            trackArtist.setText(a);
             albumArt.setImageBitmap(art);
             currentLyricIndex = -1;
-            currentLyrics = null;
+            currentLyrics     = null;
             lyricsContainer.removeAllViews();
 
-            if (cfg.showLyrics && !currentTrack.isEmpty()) {
-                lyricsProvider.fetch(currentTrack, currentArtist, lyrics -> {
+            if (cfg.showLyrics && !t.isEmpty()) {
+                lyricsProvider.fetch(t, a, lyrics -> {
                     currentLyrics = lyrics;
                     currentLyricIndex = -1;
                     lyricsContainer.removeAllViews();
@@ -283,7 +314,6 @@ public class CarActivity extends Activity {
 
         @Override
         public void onPlaybackStateChanged(boolean playing, long posMs, long durationMs) {
-            isPlaying = playing;
             trackDurationMs = durationMs;
             btnPlayPause.setImageResource(playing
                     ? android.R.drawable.ic_media_pause
@@ -298,14 +328,6 @@ public class CarActivity extends Activity {
             trackArtist.setText("");
             albumArt.setImageDrawable(null);
             lyricsContainer.removeAllViews();
-        }
-    };
-
-    private final SpeedMonitor.Listener speedListener = speedKmh -> {
-        if (cfg.speedUnit.equals("mph")) {
-            speedLabel.setText(String.valueOf((int) (speedKmh * 0.621371f)));
-        } else {
-            speedLabel.setText(String.valueOf((int) speedKmh));
         }
     };
 }
