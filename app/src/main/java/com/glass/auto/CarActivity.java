@@ -69,6 +69,13 @@ public class CarActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // Redirect to setup wizard if any permission is missing
+        if (!PermissionHelper.allGranted(this)) {
+            startActivity(new Intent(this, SetupActivity.class));
+            finish();
+            return;
+        }
+
         // Fullscreen, keep screen on while driving
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                 | WindowManager.LayoutParams.FLAG_FULLSCREEN

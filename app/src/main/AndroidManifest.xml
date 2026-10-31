@@ -39,6 +39,12 @@
             </intent-filter>
         </activity>
 
+        <!-- First-launch permission setup wizard -->
+        <activity
+            android:name=".SetupActivity"
+            android:exported="false"
+            android:label="Setup" />
+
         <!-- Settings -->
         <activity
             android:name=".CarSettingsActivity"
