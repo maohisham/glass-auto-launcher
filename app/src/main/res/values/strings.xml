@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Glass Auto</string>
+    <string name="settings_title">Car Settings</string>
+    <string name="pick_app">Select App</string>
+    <string name="pick_map_app">Select Map App</string>
+    <string name="pick_media_app">Select Media App</string>
+    <string name="no_media">No media playing</string>
+    <string name="no_lyrics">No lyrics available</string>
+    <string name="speed_unit_kmh">km/h</string>
+    <string name="speed_unit_mph">mph</string>
+</resources>

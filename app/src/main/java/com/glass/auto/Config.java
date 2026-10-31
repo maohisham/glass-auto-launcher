@@ -1,0 +1,74 @@
+package com.glass.auto;
+
+import android.content.Context;
+import android.util.Log;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+
+/** Reads config.json from the app's external files directory. All fields have safe defaults. */
+public class Config {
+
+    private static final String TAG = "GlassAuto.Config";
+    private static final String FILE = "config.json";
+
+    // Map panel
+    public String mapPackage = "";          // package name of preferred map app
+    public float splitRatio = 0.6f;        // fraction of screen width for map panel (0.3 – 0.8)
+
+    // Media
+    public String mediaPackage = "";        // preferred media app package (empty = auto-detect active session)
+    public boolean showLyrics = true;
+
+    // Dock
+    public List<String> dockApps = new ArrayList<>();
+    public String dockPosition = "bottom";  // "bottom" | "right"
+    public boolean dockAutoHide = false;
+
+    // Speed
+    public boolean showSpeed = true;
+    public String speedUnit = "kmh";        // "kmh" | "mph"
+
+    // Appearance
+    public boolean reducedMotion = false;
+    public boolean darkStatusBar = true;
+
+    public static Config load(Context ctx) {
+        Config c = new Config();
+        try {
+            File dir = ctx.getExternalFilesDir(null);
+            if (dir == null) return c;
+            File f = new File(dir, FILE);
+            if (!f.exists()) return c;
+            byte[] bytes = new byte[(int) f.length()];
+            try (FileInputStream in = new FileInputStream(f)) {
+                //noinspection ResultOfMethodCallIgnored
+                in.read(bytes);
+            }
+            JSONObject j = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
+            c.mapPackage    = j.optString("map_package", "");
+            c.splitRatio    = (float) j.optDouble("split_ratio", 0.6);
+            c.mediaPackage  = j.optString("media_package", "");
+            c.showLyrics    = j.optBoolean("show_lyrics", true);
+            c.dockPosition  = j.optString("dock_position", "bottom");
+            c.dockAutoHide  = j.optBoolean("dock_auto_hide", false);
+            c.showSpeed     = j.optBoolean("show_speed", true);
+            c.speedUnit     = j.optString("speed_unit", "kmh");
+            c.reducedMotion = j.optBoolean("reduced_motion", false);
+            c.darkStatusBar = j.optBoolean("dark_status_bar", true);
+            JSONArray apps = j.optJSONArray("dock_apps");
+            if (apps != null) {
+                for (int i = 0; i < apps.length(); i++) c.dockApps.add(apps.getString(i));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "config read failed", e);
+        }
+        return c;
+    }
+}

@@ -1,0 +1,2 @@
+-keep class com.glass.auto.** { *; }
+-keepattributes *Annotation*
