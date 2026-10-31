@@ -4,6 +4,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -21,42 +22,59 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Fetches prayer times from Aladhan API (free, no API key, worldwide).
- * Refreshes daily and on significant location change (>5 km via LocationHelper).
+ * Fetches prayer times from the official JAKIM e-Solat API (www.e-solat.gov.my).
  *
- * Method defaults to 3 (Muslim World League). Override via config if needed.
+ * Strategy:
+ *   1. Detect nearest JAKIM zone from GPS coordinates (JakimZoneLookup).
+ *   2. Fetch from JAKIM e-Solat primary endpoint.
+ *   3. Fall back to waktusolat.app (mirrors JAKIM data, more reliable uptime).
+ *   4. Fall back to Aladhan API with method=17 (JAKIM calculation method).
+ *
+ * Prayer names follow JAKIM's official Malay terminology.
+ * Refreshes on location change >5 km or daily at midnight.
+ * Tick every minute to update current/next prayer label.
  */
 public class PrayerTimesManager implements LocationHelper.Listener {
 
     private static final String TAG = "GlassAuto.Prayer";
-    // Aladhan v1 timings endpoint
-    private static final String API =
-            "https://api.aladhan.com/v1/timings/%d?latitude=%s&longitude=%s&method=%d";
 
-    // Prayer names in order (display name → API key)
-    private static final String[] PRAYER_KEYS  = {"Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"};
-    private static final String[] PRAYER_NAMES = {"Subuh", "Zohor", "Asar", "Maghrib", "Isyak"};
+    // JAKIM e-Solat official API — period=today returns today's single entry
+    private static final String ESOLAT_API =
+            "https://www.e-solat.gov.my/index.php?r=esolatApi/takwimsolat&period=today&zone=%s";
+
+    // waktusolat.app mirrors JAKIM data; returns full month, we pick today's day
+    private static final String WAKTU_API =
+            "https://api.waktusolat.app/v2/solat/%s";
+
+    // Aladhan fallback — method 17 = JAKIM
+    private static final String ALADHAN_API =
+            "https://api.aladhan.com/v1/timings/%d?latitude=%s&longitude=%s&method=17";
+
+    // Display names matching JAKIM's official Malay terminology
+    private static final String[] PRAYER_DISPLAY = {"Subuh", "Zohor", "Asar", "Maghrib", "Isyak"};
 
     public static class PrayerData {
-        /** All five prayer times for today. Key = display name, value = "HH:mm". */
-        public Map<String, String> times = new LinkedHashMap<>();
-        public String currentPrayer  = "";   // e.g. "Zohor"
-        public String currentTime    = "";   // e.g. "12:30"
-        public String nextPrayer     = "";   // e.g. "Asar"
-        public String nextTime       = "";   // e.g. "15:45"
-        public long   nextPrayerMs   = 0;    // epoch ms of next prayer (for countdown)
+        public Map<String, String> times  = new LinkedHashMap<>();
+        public String currentPrayer       = "";
+        public String currentTime         = "";
+        public String nextPrayer          = "";
+        public String nextTime            = "";
+        public long   nextPrayerMs        = 0;
+        public String zoneName            = "";
+        public String zoneCode            = "";
     }
 
     public interface Listener {
         void onPrayerTimes(PrayerData data);
     }
 
-    private final ExecutorService executor  = Executors.newSingleThreadExecutor();
-    private final Handler         main      = new Handler(Looper.getMainLooper());
-    private Listener listener;
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Handler         main     = new Handler(Looper.getMainLooper());
+
+    private Listener   listener;
     private PrayerData cached;
-    private long lastFetchDate = 0; // yyyyMMdd as long
-    private int method = 3; // Muslim World League default
+    private long lastFetchDateKey = 0; // yyyyMMdd
+    private double lastLat = Double.NaN, lastLon = Double.NaN;
 
     public void setListener(Listener l) {
         this.listener = l;
@@ -66,58 +84,174 @@ public class PrayerTimesManager implements LocationHelper.Listener {
         }
     }
 
-    /** Override calculation method (Aladhan method id). Default: 3 (Muslim World League). */
-    public void setMethod(int m) { method = m; }
-
     @Override
     public void onLocation(double lat, double lon) {
         long today = todayKey();
-        if (cached != null && lastFetchDate == today) {
-            // Same day — just recompute current/next from cached times and notify
+        JakimZoneLookup.Zone zone = JakimZoneLookup.nearest(lat, lon);
+        boolean sameDay  = lastFetchDateKey == today;
+        boolean sameZone = zone.code.equals(cached != null ? cached.zoneCode : "");
+
+        if (cached != null && sameDay && sameZone) {
+            // Same day, same zone — just recompute current/next
             cached = computeCurrentNext(cached);
             main.post(() -> { if (listener != null) listener.onPrayerTimes(cached); });
             return;
         }
-        fetch(lat, lon, today);
+
+        lastLat = lat;
+        lastLon = lon;
+        fetch(lat, lon, zone, today);
     }
 
-    /** Force a refresh (e.g. on date change at midnight). */
-    public void refresh(double lat, double lon) {
-        lastFetchDate = 0;
-        fetch(lat, lon, todayKey());
-    }
-
-    /** Recompute current/next prayer without a network call. Call every minute from CarActivity. */
+    /** Call once per minute from CarActivity to update the current/next label. */
     public void tick() {
         if (cached == null) return;
         cached = computeCurrentNext(cached);
         main.post(() -> { if (listener != null) listener.onPrayerTimes(cached); });
     }
 
-    private void fetch(double lat, double lon, long todayKey) {
+    private void fetch(double lat, double lon, JakimZoneLookup.Zone zone, long dateKey) {
         executor.execute(() -> {
-            PrayerData data = fetchSync(lat, lon);
-            if (data != null) {
-                lastFetchDate = todayKey;
-                cached = computeCurrentNext(data);
-                main.post(() -> { if (listener != null) listener.onPrayerTimes(cached); });
+            PrayerData data = null;
+
+            // 1. Try official JAKIM e-Solat
+            data = fetchEsolat(zone);
+            if (data == null) {
+                Log.w(TAG, "e-Solat failed, trying waktusolat.app");
+                // 2. Try waktusolat.app mirror
+                data = fetchWaktuSolat(zone);
             }
+            if (data == null) {
+                Log.w(TAG, "waktusolat.app failed, falling back to Aladhan method=17");
+                // 3. Aladhan with JAKIM method
+                data = fetchAladhan(lat, lon);
+            }
+
+            if (data == null) {
+                Log.e(TAG, "All prayer time sources failed");
+                return;
+            }
+
+            data.zoneCode = zone.code;
+            data.zoneName = zone.name;
+            lastFetchDateKey = dateKey;
+            cached = computeCurrentNext(data);
+
+            final PrayerData finalData = cached;
+            main.post(() -> { if (listener != null) listener.onPrayerTimes(finalData); });
         });
     }
 
-    private PrayerData fetchSync(double lat, double lon) {
+    // -----------------------------------------------------------------------
+    // Source 1: official JAKIM e-Solat API
+
+    private PrayerData fetchEsolat(JakimZoneLookup.Zone zone) {
+        try {
+            String url = String.format(ESOLAT_API, zone.code);
+            String body = get(url);
+            if (body == null) return null;
+
+            JSONObject root = new JSONObject(body);
+            // Response: { "status": "OK!", "prayerTime": [ { "hijri":..., "date":"01-Nov-2026",
+            //   "day":"Saturday", "imsak":"05:37", "fajr":"05:47", "syuruk":"07:02",
+            //   "dhuhr":"13:08", "asr":"16:28", "sunset":"19:12", "maghrib":"19:12",
+            //   "isha":"20:24", "midnight":"01:07" } ] }
+            String status = root.optString("status", "");
+            if (!status.contains("OK")) return null;
+
+            JSONArray arr = root.getJSONArray("prayerTime");
+            if (arr.length() == 0) return null;
+            JSONObject t = arr.getJSONObject(0);
+
+            PrayerData d = new PrayerData();
+            d.times.put("Subuh",   stripTz(t.optString("fajr",    "")));
+            d.times.put("Zohor",   stripTz(t.optString("dhuhr",   "")));
+            d.times.put("Asar",    stripTz(t.optString("asr",     "")));
+            d.times.put("Maghrib", stripTz(t.optString("maghrib", "")));
+            d.times.put("Isyak",   stripTz(t.optString("isha",    "")));
+            return validate(d) ? d : null;
+        } catch (Exception e) {
+            Log.w(TAG, "e-Solat parse failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Source 2: waktusolat.app (JAKIM mirror, higher uptime)
+
+    private PrayerData fetchWaktuSolat(JakimZoneLookup.Zone zone) {
+        try {
+            String url = String.format(WAKTU_API, zone.code);
+            String body = get(url);
+            if (body == null) return null;
+
+            JSONObject root = new JSONObject(body);
+            // Response: { "zone":"WLY01", "prayer_time": [ { "day":1, "subuh":"05:45",
+            //   "syuruk":"07:01", "zohor":"13:07", "asar":"16:28",
+            //   "maghrib":"19:11", "isyak":"20:24" }, ... ] }
+            JSONArray arr = root.optJSONArray("prayer_time");
+            if (arr == null || arr.length() == 0) return null;
+
+            // Find today's entry by day-of-month
+            int dayOfMonth = Calendar.getInstance().get(Calendar.DAY_OF_MONTH);
+            JSONObject t = null;
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject entry = arr.getJSONObject(i);
+                if (entry.optInt("day", -1) == dayOfMonth) { t = entry; break; }
+            }
+            if (t == null) t = arr.getJSONObject(0); // fallback to first entry
+
+            PrayerData d = new PrayerData();
+            d.times.put("Subuh",   stripTz(t.optString("subuh",   "")));
+            d.times.put("Zohor",   stripTz(t.optString("zohor",   "")));
+            d.times.put("Asar",    stripTz(t.optString("asar",    "")));
+            d.times.put("Maghrib", stripTz(t.optString("maghrib", "")));
+            d.times.put("Isyak",   stripTz(t.optString("isyak",   "")));
+            return validate(d) ? d : null;
+        } catch (Exception e) {
+            Log.w(TAG, "waktusolat parse failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Source 3: Aladhan with method=17 (JAKIM algorithm)
+
+    private PrayerData fetchAladhan(double lat, double lon) {
         try {
             long epochSec = System.currentTimeMillis() / 1000;
-            String url = String.format(Locale.US, API, epochSec,
+            String url = String.format(Locale.US, ALADHAN_API, epochSec,
                     String.format(Locale.US, "%.4f", lat),
-                    String.format(Locale.US, "%.4f", lon),
-                    method);
-            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+                    String.format(Locale.US, "%.4f", lon));
+            String body = get(url);
+            if (body == null) return null;
+
+            JSONObject timings = new JSONObject(body)
+                    .getJSONObject("data").getJSONObject("timings");
+
+            PrayerData d = new PrayerData();
+            d.times.put("Subuh",   stripTz(timings.optString("Fajr",    "")));
+            d.times.put("Zohor",   stripTz(timings.optString("Dhuhr",   "")));
+            d.times.put("Asar",    stripTz(timings.optString("Asr",     "")));
+            d.times.put("Maghrib", stripTz(timings.optString("Maghrib", "")));
+            d.times.put("Isyak",   stripTz(timings.optString("Isha",    "")));
+            return validate(d) ? d : null;
+        } catch (Exception e) {
+            Log.w(TAG, "Aladhan fallback failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers
+
+    private String get(String urlStr) {
+        try {
+            HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
             conn.setRequestProperty("User-Agent", "GlassAuto/1.0");
             conn.setConnectTimeout(8000);
             conn.setReadTimeout(8000);
-            if (conn.getResponseCode() != 200) return null;
-
+            if (conn.getResponseCode() != 200) { conn.disconnect(); return null; }
             StringBuilder sb = new StringBuilder();
             try (BufferedReader br = new BufferedReader(
                     new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
@@ -125,50 +259,45 @@ public class PrayerTimesManager implements LocationHelper.Listener {
                 while ((line = br.readLine()) != null) sb.append(line);
             }
             conn.disconnect();
-
-            JSONObject root    = new JSONObject(sb.toString());
-            JSONObject timings = root.getJSONObject("data").getJSONObject("timings");
-
-            PrayerData d = new PrayerData();
-            for (int i = 0; i < PRAYER_KEYS.length; i++) {
-                String raw = timings.optString(PRAYER_KEYS[i], "");
-                // Aladhan returns "HH:mm (TZ)" — keep only "HH:mm"
-                if (raw.contains(" ")) raw = raw.split(" ")[0];
-                d.times.put(PRAYER_NAMES[i], raw);
-            }
-            return d;
+            return sb.toString();
         } catch (Exception e) {
-            Log.w(TAG, "Prayer fetch failed: " + e.getMessage());
+            Log.w(TAG, "HTTP GET failed: " + urlStr + " — " + e.getMessage());
             return null;
         }
     }
 
-    /** Determine which prayer is current and which is next based on the current clock time. */
+    /** Strip timezone suffix e.g. "13:07 +08" → "13:07" */
+    private String stripTz(String s) {
+        if (s == null) return "";
+        int space = s.indexOf(' ');
+        return space > 0 ? s.substring(0, space) : s;
+    }
+
+    /** Return false if any prayer time is empty/invalid. */
+    private boolean validate(PrayerData d) {
+        for (String t : d.times.values()) {
+            if (t == null || t.isEmpty() || !t.contains(":")) return false;
+        }
+        return true;
+    }
+
     private PrayerData computeCurrentNext(PrayerData d) {
         Calendar now = Calendar.getInstance();
         int nowMins = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE);
 
         String[] names = d.times.keySet().toArray(new String[0]);
         String[] times = d.times.values().toArray(new String[0]);
-        int[] mins = new int[times.length];
+        int[]    mins  = new int[times.length];
+        for (int i = 0; i < times.length; i++) mins[i] = parseHHmm(times[i]);
 
-        for (int i = 0; i < times.length; i++) {
-            mins[i] = parseHHmm(times[i]);
-        }
+        int currentIdx = -1, nextIdx;
+        for (int i = 0; i < mins.length; i++) if (mins[i] <= nowMins) currentIdx = i;
 
-        int currentIdx = -1;
-        int nextIdx    = -1;
-
-        for (int i = 0; i < mins.length; i++) {
-            if (mins[i] <= nowMins) currentIdx = i;
-        }
         if (currentIdx == -1) {
-            // Before Fajr — current is Isyak (yesterday), next is Fajr
-            currentIdx = mins.length - 1;
-            nextIdx    = 0;
-        } else if (currentIdx == mins.length - 1) {
-            // After Isyak — next is Fajr tomorrow
+            currentIdx = mins.length - 1; // before Subuh — current = Isyak (prev day)
             nextIdx = 0;
+        } else if (currentIdx == mins.length - 1) {
+            nextIdx = 0; // after Isyak — next = Subuh tomorrow
         } else {
             nextIdx = currentIdx + 1;
         }
@@ -178,30 +307,23 @@ public class PrayerTimesManager implements LocationHelper.Listener {
         d.nextPrayer    = names[nextIdx];
         d.nextTime      = times[nextIdx];
 
-        // Compute epoch ms for next prayer
         Calendar next = Calendar.getInstance();
-        int nextMins = mins[nextIdx];
-        next.set(Calendar.HOUR_OF_DAY, nextMins / 60);
-        next.set(Calendar.MINUTE, nextMins % 60);
+        next.set(Calendar.HOUR_OF_DAY, mins[nextIdx] / 60);
+        next.set(Calendar.MINUTE,      mins[nextIdx] % 60);
         next.set(Calendar.SECOND, 0);
         next.set(Calendar.MILLISECOND, 0);
-        // If next prayer is Fajr and we're after Isyak, it's tomorrow
-        if (nextIdx == 0 && currentIdx == mins.length - 1) {
+        if (nextIdx == 0 && currentIdx == mins.length - 1)
             next.add(Calendar.DAY_OF_YEAR, 1);
-        }
         d.nextPrayerMs = next.getTimeInMillis();
         return d;
     }
 
     private int parseHHmm(String hhmm) {
-        try {
-            String[] p = hhmm.split(":");
-            return Integer.parseInt(p[0]) * 60 + Integer.parseInt(p[1]);
-        } catch (Exception e) { return 0; }
+        try { String[] p = hhmm.split(":"); return Integer.parseInt(p[0]) * 60 + Integer.parseInt(p[1]); }
+        catch (Exception e) { return 0; }
     }
 
     private long todayKey() {
-        return Long.parseLong(new SimpleDateFormat("yyyyMMdd", Locale.US)
-                .format(new Date()));
+        return Long.parseLong(new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date()));
     }
 }

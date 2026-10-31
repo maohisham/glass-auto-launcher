@@ -192,9 +192,13 @@ public class CarActivity extends Activity {
 
         // Prayer times (triggers on location, ticks every minute)
         prayer = new PrayerTimesManager();
-        prayer.setListener(d ->
-                dock.setPrayerTimes(d.currentPrayer, d.currentTime,
-                        d.nextPrayer, d.nextTime));
+        prayer.setListener(d -> {
+            dock.setPrayerTimes(d.currentPrayer, d.currentTime,
+                    d.nextPrayer, d.nextTime);
+            // Log zone so developer can confirm correct zone was selected
+            if (!d.zoneCode.isEmpty())
+                android.util.Log.i("GlassAuto", "Prayer zone: " + d.zoneCode + " — " + d.zoneName);
+        });
         location.addListener(prayer);
 
         // Media
