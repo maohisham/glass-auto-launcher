@@ -128,6 +128,7 @@ public class CarActivity extends Activity {
     }
 
     private void setupDock() {
+        dock.configureScale(cfg.uiScale); // 0 = auto from dock width; >0 = manual
         dock.setApps(cfg.dockApps, getPackageManager());
         dock.setLaunchListener(pkg -> {
             Intent i = getPackageManager().getLaunchIntentForPackage(pkg);

@@ -41,6 +41,7 @@ public class Config {
     // Appearance
     public boolean reducedMotion = false;
     public boolean darkStatusBar = true;
+    public float   uiScale       = 0f;   // 0 = auto-scale from screen width; >0 = manual multiplier
 
     public static Config load(Context ctx) {
         Config c = new Config();
@@ -68,6 +69,7 @@ public class Config {
             c.speedUnit     = j.optString("speed_unit", "kmh");
             c.reducedMotion = j.optBoolean("reduced_motion", false);
             c.darkStatusBar = j.optBoolean("dark_status_bar", true);
+            c.uiScale       = (float) j.optDouble("ui_scale", 0.0);
             JSONArray apps = j.optJSONArray("dock_apps");
             if (apps != null) {
                 for (int i = 0; i < apps.length(); i++) c.dockApps.add(apps.getString(i));

@@ -39,7 +39,11 @@ public class DockView extends View {
     private final RectF selRect    = new RectF();
     private final Rect  textBounds = new Rect();
 
-    private final float dp;
+    private final float rawDp;  // physical display density (immutable)
+    private       float dp;     // effective scale = rawDp * uiScale (recomputed on resize/config)
+    private       float uiScale  = 1.0f;
+    private       boolean autoScale = true;
+    private static final float REF_WIDTH_PX = 1280f; // reference screen width for auto-scale
 
     // --- State ---
     private String  clockText   = "00:00";
@@ -68,7 +72,8 @@ public class DockView extends View {
 
     public DockView(Context ctx, AttributeSet attrs) {
         super(ctx, attrs);
-        dp = ctx.getResources().getDisplayMetrics().density;
+        rawDp = ctx.getResources().getDisplayMetrics().density;
+        dp    = rawDp; // will be recomputed in onSizeChanged once width is known
 
         bgPaint.setColor(0x00000000);
         bgPaint.setStyle(Paint.Style.FILL);
@@ -98,6 +103,36 @@ public class DockView extends View {
         dimPaint.setTextSize(16f * dp);
 
         setWillNotDraw(false);
+    }
+
+    /**
+     * Set a manual UI scale override.
+     * Pass 0 (or any value ≤ 0) to re-enable auto-scaling from the dock's pixel width.
+     * Auto-scale formula: clamp(dockWidthPx / 1280, 0.6, 2.0).
+     */
+    public void configureScale(float cfgScale) {
+        if (cfgScale > 0f) {
+            autoScale = false;
+            uiScale   = cfgScale;
+        } else {
+            autoScale = true;
+            // recompute now if we already have a size
+            if (getWidth() > 0) recomputeScale(getWidth());
+        }
+        dp = rawDp * uiScale;
+        invalidate();
+    }
+
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        if (autoScale && w > 0) recomputeScale(w);
+        dp = rawDp * uiScale;
+    }
+
+    private void recomputeScale(int widthPx) {
+        float raw = widthPx / REF_WIDTH_PX;
+        uiScale = Math.max(0.6f, Math.min(2.0f, raw));
     }
 
     // --- Setters (called from CarActivity tick) ---

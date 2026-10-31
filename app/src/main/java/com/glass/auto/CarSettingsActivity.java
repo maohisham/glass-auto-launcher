@@ -74,6 +74,15 @@ public class CarSettingsActivity extends Activity {
         addSection(root, "Reduced Motion");
         addSwitch(root, cfg.reducedMotion, on -> cfg.reducedMotion = on);
 
+        addSection(root, "UI Scale (dock text & sections)");
+        float[] scaleValues = {0f, 0.75f, 1.0f, 1.25f, 1.5f};
+        String[] scaleLabels = {"Auto (recommended)", "75%", "100%", "125%", "150%"};
+        int scaleSel = 0;
+        for (int i = 1; i < scaleValues.length; i++) {
+            if (Math.abs(cfg.uiScale - scaleValues[i]) < 0.01f) { scaleSel = i; break; }
+        }
+        addSpinner(root, scaleLabels, scaleSel, idx -> cfg.uiScale = scaleValues[idx]);
+
         Button save = new Button(this);
         save.setText("Save & Close");
         save.setOnClickListener(v -> { saveConfig(); finish(); });
@@ -153,6 +162,7 @@ public class CarSettingsActivity extends Activity {
             j.put("dock_position",  cfg.dockPosition);
             j.put("dock_auto_hide", cfg.dockAutoHide);
             j.put("reduced_motion", cfg.reducedMotion);
+            j.put("ui_scale",       cfg.uiScale);
             JSONArray apps = new JSONArray();
             for (String pkg : cfg.dockApps) apps.put(pkg);
             j.put("dock_apps", apps);
