@@ -43,8 +43,18 @@ public class CarSettingsActivity extends Activity {
         mapApps   = FreeformLauncher.findMapApps(this);
         mediaApps = FreeformLauncher.findMediaApps(this);
 
-        addSection(root, "Map App");
+        addSection(root, "Panel Layout");
+        addSpinner(root,
+                new String[]{"1 panel (map fullscreen)", "2 panels (map + media)", "3 panels (map + media + app)"},
+                cfg.panelCount - 1,
+                idx -> cfg.panelCount = idx + 1);
+
+        addSection(root, "Panel 1 — Map App");
         addAppSpinner(root, mapApps, cfg.mapPackage, pkg -> cfg.mapPackage = pkg);
+
+        addSection(root, "Panel 3 App (3-panel mode only)");
+        List<FreeformLauncher.AppInfo> allApps = FreeformLauncher.findAllApps(this);
+        addAppSpinner(root, allApps, cfg.panel3Package, pkg -> cfg.panel3Package = pkg);
 
         addSection(root, "Media App (empty = auto-detect)");
         addAppSpinner(root, mediaApps, cfg.mediaPackage, pkg -> cfg.mediaPackage = pkg);
@@ -131,9 +141,12 @@ public class CarSettingsActivity extends Activity {
     private void saveConfig() {
         try {
             JSONObject j = new JSONObject();
+            j.put("panel_count",    cfg.panelCount);
             j.put("map_package",    cfg.mapPackage);
-            j.put("media_package",  cfg.mediaPackage);
+            j.put("panel3_package", cfg.panel3Package);
             j.put("split_ratio",    cfg.splitRatio);
+            j.put("split_ratio2",   cfg.splitRatio2);
+            j.put("media_package",  cfg.mediaPackage);
             j.put("show_lyrics",    cfg.showLyrics);
             j.put("show_speed",     cfg.showSpeed);
             j.put("speed_unit",     cfg.speedUnit);

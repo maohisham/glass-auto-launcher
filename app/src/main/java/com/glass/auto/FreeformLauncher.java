@@ -96,6 +96,24 @@ public class FreeformLauncher {
         return result;
     }
 
+    /** Returns every launchable app installed on the device (for panel 3 picker). */
+    public static List<AppInfo> findAllApps(Context ctx) {
+        PackageManager pm = ctx.getPackageManager();
+        Intent probe = new Intent(Intent.ACTION_MAIN);
+        probe.addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> resolved = pm.queryIntentActivities(probe, 0);
+        List<AppInfo> result = new ArrayList<>();
+        for (ResolveInfo ri : resolved) {
+            AppInfo info = new AppInfo();
+            info.packageName = ri.activityInfo.packageName;
+            info.label = ri.loadLabel(pm).toString();
+            info.icon  = ri.loadIcon(pm);
+            result.add(info);
+        }
+        result.sort((a, b) -> a.label.compareToIgnoreCase(b.label));
+        return result;
+    }
+
     /** Returns all installed apps that handle media playback intents. */
     public static List<AppInfo> findMediaApps(Context ctx) {
         PackageManager pm = ctx.getPackageManager();

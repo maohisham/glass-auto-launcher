@@ -30,6 +30,8 @@ public class CarActivity extends Activity {
     private SplitPanelLayout splitPanel;
     private View             mapPanel;
     private View             mapHint;
+    private View             panel3Container;
+    private View             panel3Hint;
     private TextView         speedLabel;
     private ImageView        albumArt;
     private TextView         trackTitle;
@@ -106,9 +108,11 @@ public class CarActivity extends Activity {
     }
 
     private void bindViews() {
-        splitPanel    = findViewById(R.id.split_panel);
-        mapPanel      = findViewById(R.id.map_panel);
-        mapHint       = findViewById(R.id.map_hint);
+        splitPanel      = findViewById(R.id.split_panel);
+        mapPanel        = findViewById(R.id.map_panel);
+        mapHint         = findViewById(R.id.map_hint);
+        panel3Container = findViewById(R.id.panel3);
+        panel3Hint      = findViewById(R.id.panel3_hint);
         speedLabel    = findViewById(R.id.speed_label);
         albumArt      = findViewById(R.id.album_art);
         trackTitle    = findViewById(R.id.track_title);
@@ -132,24 +136,36 @@ public class CarActivity extends Activity {
     }
 
     private void setupSplitPanel() {
-        splitPanel.setRatio(cfg.splitRatio);
-        splitPanel.setOnRatioChangedListener(ratio -> {
-            cfg.splitRatio = ratio;
-            handler.removeCallbacks(relaunchMapRunnable);
-            handler.postDelayed(relaunchMapRunnable, 300);
+        int mode = cfg.panelCount == 1 ? SplitPanelLayout.MODE_SINGLE
+                 : cfg.panelCount == 3 ? SplitPanelLayout.MODE_TRIPLE
+                 : SplitPanelLayout.MODE_SPLIT;
+        splitPanel.setMode(mode);
+        splitPanel.setRatios(cfg.splitRatio, cfg.splitRatio2);
+
+        splitPanel.setOnRatioChangedListener((dividerIdx, r1, r2) -> {
+            cfg.splitRatio  = r1;
+            cfg.splitRatio2 = r2;
+            handler.removeCallbacks(relaunchPanelsRunnable);
+            handler.postDelayed(relaunchPanelsRunnable, 300);
         });
+
         splitPanel.getViewTreeObserver().addOnGlobalLayoutListener(
                 new ViewTreeObserver.OnGlobalLayoutListener() {
                     @Override public void onGlobalLayout() {
                         splitPanel.getViewTreeObserver().removeOnGlobalLayoutListener(this);
-                        launchMapApp();
+                        launchFreeformPanels();
                     }
                 });
     }
 
-    private final Runnable relaunchMapRunnable = this::launchMapApp;
+    private final Runnable relaunchPanelsRunnable = this::launchFreeformPanels;
 
-    private void launchMapApp() {
+    private void launchFreeformPanels() {
+        launchPanel1();
+        if (cfg.panelCount == 3) launchPanel3();
+    }
+
+    private void launchPanel1() {
         if (cfg.mapPackage.isEmpty()) { mapHint.setVisibility(View.VISIBLE); return; }
         mapHint.setVisibility(View.GONE);
         int[] loc = new int[2];
@@ -157,6 +173,19 @@ public class CarActivity extends Activity {
         Rect bounds = new Rect(loc[0], loc[1],
                 loc[0] + mapPanel.getWidth(), loc[1] + mapPanel.getHeight());
         FreeformLauncher.launchMap(this, cfg.mapPackage, bounds);
+    }
+
+    private void launchPanel3() {
+        if (cfg.panel3Package.isEmpty()) {
+            panel3Hint.setVisibility(View.VISIBLE);
+            return;
+        }
+        panel3Hint.setVisibility(View.GONE);
+        int[] loc = new int[2];
+        panel3Container.getLocationOnScreen(loc);
+        Rect bounds = new Rect(loc[0], loc[1],
+                loc[0] + panel3Container.getWidth(), loc[1] + panel3Container.getHeight());
+        FreeformLauncher.launch(this, cfg.panel3Package, bounds);
     }
 
     private void setupMediaControls() {
@@ -226,7 +255,7 @@ public class CarActivity extends Activity {
         super.onPause();
         handler.removeCallbacks(tickRunnable);
         handler.removeCallbacks(prayerTickRunnable);
-        handler.removeCallbacks(relaunchMapRunnable);
+        handler.removeCallbacks(relaunchPanelsRunnable);
         location.stop();
         speedMonitor.stop();
         mediaCtrl.stop();

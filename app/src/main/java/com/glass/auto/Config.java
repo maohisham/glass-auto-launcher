@@ -18,9 +18,12 @@ public class Config {
     private static final String TAG = "GlassAuto.Config";
     private static final String FILE = "config.json";
 
-    // Map panel
-    public String mapPackage = "";          // package name of preferred map app
-    public float splitRatio = 0.6f;        // fraction of screen width for map panel (0.3 – 0.8)
+    // Panel layout
+    public int    panelCount  = 2;          // 1, 2, or 3
+    public String mapPackage  = "";         // package name of preferred map app (panel 1)
+    public String panel3Package = "";       // package name for panel 3 (3-panel mode)
+    public float  splitRatio  = 0.55f;     // panel1 fraction of total width
+    public float  splitRatio2 = 0.50f;     // panel2 fraction of remaining width (3-panel)
 
     // Media
     public String mediaPackage = "";        // preferred media app package (empty = auto-detect active session)
@@ -52,8 +55,11 @@ public class Config {
                 in.read(bytes);
             }
             JSONObject j = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
+            c.panelCount    = j.optInt("panel_count", 2);
             c.mapPackage    = j.optString("map_package", "");
-            c.splitRatio    = (float) j.optDouble("split_ratio", 0.6);
+            c.panel3Package = j.optString("panel3_package", "");
+            c.splitRatio    = (float) j.optDouble("split_ratio", 0.55);
+            c.splitRatio2   = (float) j.optDouble("split_ratio2", 0.50);
             c.mediaPackage  = j.optString("media_package", "");
             c.showLyrics    = j.optBoolean("show_lyrics", true);
             c.dockPosition  = j.optString("dock_position", "bottom");
