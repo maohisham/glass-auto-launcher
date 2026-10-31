@@ -216,7 +216,8 @@ public class CarActivity extends Activity {
 
         // Weather (triggers on location, refreshes every 30 min)
         weather = new WeatherManager();
-        weather.setListener(d -> dock.setWeather(d.emoji, (int) d.tempC + "°"));
+        weather.setContext(this);
+        weather.setListener(d -> dock.setWeather(d.emoji, (int) d.tempC + "°", d.cityName));
         location.addListener(weather);
 
         // Prayer times (triggers on location, ticks every minute)

@@ -46,6 +46,7 @@ public class DockView extends View {
     private String  dateText    = "Mon, 1 Jan";
     private String  weatherEmoji = "–";
     private String  weatherTemp  = "–°";
+    private String  weatherCity  = "";
     private String  prayerCurrent = "";
     private String  prayerCurrentTime = "";
     private String  prayerNext   = "";
@@ -57,7 +58,7 @@ public class DockView extends View {
 
     // Section widths in dp
     private static final float CLOCK_W    = 130f;
-    private static final float WEATHER_W  = 90f;
+    private static final float WEATHER_W  = 120f; // wider to fit city name
     private static final float PRAYER_W   = 190f;
     private static final float ICON_SIZE  = 44f;
     private static final float ICON_PAD   = 10f;
@@ -105,9 +106,10 @@ public class DockView extends View {
         invalidate();
     }
 
-    public void setWeather(String emoji, String tempC) {
+    public void setWeather(String emoji, String tempC, String city) {
         weatherEmoji = emoji;
         weatherTemp  = tempC;
+        weatherCity  = city != null ? city : "";
         invalidate();
     }
 
@@ -205,16 +207,34 @@ public class DockView extends View {
     }
 
     private void drawWeather(Canvas c, float x, float w, float cy, float h) {
-        // Emoji (large)
-        valuePaint.setTextSize(20f * dp);
-        valuePaint.getTextBounds(weatherEmoji, 0, weatherEmoji.length(), textBounds);
-        float emojiW = textBounds.width();
-        c.drawText(weatherEmoji, x + (w - emojiW) / 2f, cy - 2 * dp, valuePaint);
-        // Temperature below
-        valuePaint.setTextSize(13f * dp);
-        valuePaint.getTextBounds(weatherTemp, 0, weatherTemp.length(), textBounds);
-        c.drawText(weatherTemp, x + (w - textBounds.width()) / 2f,
-                cy + 16 * dp, valuePaint);
+        boolean hasCity = weatherCity != null && !weatherCity.isEmpty();
+        // Shift content up slightly when city name is shown so all three rows fit
+        float topShift = hasCity ? 8f * dp : 0f;
+
+        // Emoji + temperature on one row (side by side, centred)
+        valuePaint.setTextSize(18f * dp);
+        String emojiTemp = weatherEmoji + " " + weatherTemp;
+        valuePaint.getTextBounds(emojiTemp, 0, emojiTemp.length(), textBounds);
+        c.drawText(emojiTemp,
+                x + (w - textBounds.width()) / 2f,
+                cy - topShift, valuePaint);
+
+        // City name below
+        if (hasCity) {
+            labelPaint.getTextBounds(weatherCity, 0, weatherCity.length(), textBounds);
+            // Truncate if too wide for the section
+            String city = weatherCity;
+            while (textBounds.width() > w - 8 * dp && city.length() > 3) {
+                city = city.substring(0, city.length() - 1);
+                labelPaint.getTextBounds(city + "…", 0, city.length() + 1, textBounds);
+            }
+            if (!city.equals(weatherCity)) city = city + "…";
+            labelPaint.getTextBounds(city, 0, city.length(), textBounds);
+            c.drawText(city,
+                    x + (w - textBounds.width()) / 2f,
+                    cy - topShift + 16f * dp, labelPaint);
+        }
+
         valuePaint.setTextSize(15f * dp); // reset
     }
 

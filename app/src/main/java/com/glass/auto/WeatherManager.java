@@ -1,5 +1,8 @@
 package com.glass.auto;
 
+import android.content.Context;
+import android.location.Address;
+import android.location.Geocoder;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -11,6 +14,8 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -33,6 +38,7 @@ public class WeatherManager implements LocationHelper.Listener {
         public int     humidity;
         public String  emoji;
         public String  description;
+        public String  cityName = ""; // reverse-geocoded city / locality
     }
 
     public interface Listener {
@@ -41,18 +47,18 @@ public class WeatherManager implements LocationHelper.Listener {
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler         main     = new Handler(Looper.getMainLooper());
+    private Context  ctx;
     private Listener listener;
-    private long lastFetchMs = 0;
-    private double pendingLat, pendingLon;
+    private long   lastFetchMs  = 0;
+    private String lastCityName = "";
 
+    public void setContext(Context c) { this.ctx = c.getApplicationContext(); }
     public void setListener(Listener l) { this.listener = l; }
 
     @Override
     public void onLocation(double lat, double lon) {
         long now = System.currentTimeMillis();
         if (now - lastFetchMs < MAX_AGE_MS) return; // still fresh
-        pendingLat = lat;
-        pendingLon = lon;
         fetch(lat, lon);
     }
 
@@ -66,7 +72,9 @@ public class WeatherManager implements LocationHelper.Listener {
         executor.execute(() -> {
             WeatherData data = fetchSync(lat, lon);
             if (data != null) {
-                lastFetchMs = System.currentTimeMillis();
+                data.cityName = reverseGeocode(lat, lon);
+                lastCityName  = data.cityName;
+                lastFetchMs   = System.currentTimeMillis();
                 main.post(() -> { if (listener != null) listener.onWeather(data); });
             }
         });
@@ -103,6 +111,63 @@ public class WeatherManager implements LocationHelper.Listener {
             Log.w(TAG, "Weather fetch failed: " + e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Reverse geocode lat/lon to a short city name.
+     * 1. Android Geocoder (fast, offline on most devices).
+     * 2. Nominatim OSM fallback if Geocoder unavailable.
+     */
+    private String reverseGeocode(double lat, double lon) {
+        // 1. Try Android Geocoder
+        if (ctx != null && Geocoder.isPresent()) {
+            try {
+                Geocoder gc = new Geocoder(ctx, Locale.getDefault());
+                List<Address> results = gc.getFromLocation(lat, lon, 1);
+                if (results != null && !results.isEmpty()) {
+                    Address a = results.get(0);
+                    // Prefer subLocality (neighbourhood) → locality (city) → subAdminArea (district)
+                    String name = a.getSubLocality();
+                    if (name == null || name.isEmpty()) name = a.getLocality();
+                    if (name == null || name.isEmpty()) name = a.getSubAdminArea();
+                    if (name != null && !name.isEmpty()) return name;
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Geocoder failed: " + e.getMessage());
+            }
+        }
+
+        // 2. Nominatim fallback
+        try {
+            String url = String.format(Locale.US,
+                    "https://nominatim.openstreetmap.org/reverse?lat=%.5f&lon=%.5f&format=json&zoom=10",
+                    lat, lon);
+            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestProperty("User-Agent", "GlassAuto/1.0");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+            if (conn.getResponseCode() == 200) {
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader br = new BufferedReader(
+                        new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) sb.append(line);
+                }
+                conn.disconnect();
+                JSONObject addr = new JSONObject(sb.toString()).optJSONObject("address");
+                if (addr != null) {
+                    // OSM address keys in priority order
+                    for (String key : new String[]{"city_district","suburb","city","town","village","county"}) {
+                        String v = addr.optString(key, "");
+                        if (!v.isEmpty()) return v;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Nominatim failed: " + e.getMessage());
+        }
+
+        return "";
     }
 
     // WMO weather interpretation codes → emoji + label
