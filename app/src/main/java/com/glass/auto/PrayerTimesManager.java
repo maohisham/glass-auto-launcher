@@ -61,6 +61,7 @@ public class PrayerTimesManager implements LocationHelper.Listener {
 
     public static class PrayerData {
         public Map<String, String> times  = new LinkedHashMap<>();
+        public String syurukTime          = ""; // sunrise — not tracked for current/next
         public String currentPrayer       = "";
         public String currentTime         = "";
         public String nextPrayer          = "";
@@ -90,6 +91,9 @@ public class PrayerTimesManager implements LocationHelper.Listener {
             main.post(() -> { if (listener != null) listener.onPrayerTimes(cached); });
         }
     }
+
+    /** Returns the last successfully fetched data, or null if not yet available. */
+    public PrayerData getCached() { return cached; }
 
     @Override
     public void onLocation(double lat, double lon) {
@@ -176,23 +180,9 @@ public class PrayerTimesManager implements LocationHelper.Listener {
             d.times.put("Asar",    stripTz(t.optString("asr",     "")));
             d.times.put("Maghrib", stripTz(t.optString("maghrib", "")));
             d.times.put("Isyak",   stripTz(t.optString("isha",    "")));
-            // Extract hijri from API response: "01-Rabi'ul Akhir-1446"
+            d.syurukTime = stripTz(t.optString("syuruk", ""));
             String rawHijri = t.optString("hijri", "");
-            if (!rawHijri.isEmpty()) {
-                int f = rawHijri.indexOf('-');
-                int l = rawHijri.lastIndexOf('-');
-                if (f > 0 && l > f) {
-                    try {
-                        d.hijriDate = Integer.parseInt(rawHijri.substring(0, f).trim())
-                                + " " + rawHijri.substring(f + 1, l).trim()
-                                + " " + rawHijri.substring(l + 1).trim();
-                    } catch (NumberFormatException ignore) {
-                        d.hijriDate = rawHijri.replace("-", " ").trim();
-                    }
-                } else {
-                    d.hijriDate = rawHijri.trim();
-                }
-            }
+            if (!rawHijri.isEmpty()) d.hijriDate = parseHijri(rawHijri);
             return validate(d) ? d : null;
         } catch (Exception e) {
             Log.w(TAG, "e-Solat parse failed: " + e.getMessage());
@@ -231,6 +221,7 @@ public class PrayerTimesManager implements LocationHelper.Listener {
             d.times.put("Asar",    stripTz(t.optString("asar",    "")));
             d.times.put("Maghrib", stripTz(t.optString("maghrib", "")));
             d.times.put("Isyak",   stripTz(t.optString("isyak",   "")));
+            d.syurukTime = stripTz(t.optString("syuruk", ""));
             return validate(d) ? d : null;
         } catch (Exception e) {
             Log.w(TAG, "waktusolat parse failed: " + e.getMessage());
@@ -357,6 +348,41 @@ public class PrayerTimesManager implements LocationHelper.Listener {
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /**
+     * Handles two formats from the JAKIM API:
+     *   DD-MonthName-YYYY  e.g. "20-Jamadil Awwal-1448"
+     *   YYYY-MM-DD         e.g. "1448-05-20" (month is 1-indexed)
+     */
+    private String parseHijri(String raw) {
+        raw = raw.trim();
+        int f = raw.indexOf('-');
+        int l = raw.lastIndexOf('-');
+        if (f <= 0 || l <= f) return raw.replace("-", " ").trim();
+        String p1 = raw.substring(0, f).trim();
+        String p2 = raw.substring(f + 1, l).trim();
+        String p3 = raw.substring(l + 1).trim();
+        try {
+            if (p1.length() == 4) {
+                // YYYY-MM-DD: p1=year, p2=month(1-indexed), p3=day
+                int yr = Integer.parseInt(p1);
+                int mo = Integer.parseInt(p2);
+                int dy = Integer.parseInt(p3);
+                if (mo >= 1 && mo <= 12) return dy + " " + HIJRI_MONTHS[mo - 1] + " " + yr;
+            } else {
+                // DD-MonthName-YYYY or DD-MM-YYYY
+                int dy = Integer.parseInt(p1);
+                try {
+                    int mo = Integer.parseInt(p2);
+                    int yr = Integer.parseInt(p3);
+                    if (mo >= 1 && mo <= 12) return dy + " " + HIJRI_MONTHS[mo - 1] + " " + yr;
+                } catch (NumberFormatException ignore) {
+                    return dy + " " + p2 + " " + p3;
+                }
+            }
+        } catch (NumberFormatException ignore) { }
+        return raw.replace("-", " ").trim();
     }
 
     private int parseHHmm(String hhmm) {

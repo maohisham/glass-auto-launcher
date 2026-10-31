@@ -8,6 +8,7 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -42,6 +43,36 @@ public class Config {
     public boolean reducedMotion = false;
     public boolean darkStatusBar = true;
     public float   uiScale       = 0f;   // 0 = auto-scale from screen width; >0 = manual multiplier
+
+    public static void save(Context ctx, Config c) {
+        try {
+            JSONObject j = new JSONObject();
+            j.put("panel_count",    c.panelCount);
+            j.put("map_package",    c.mapPackage);
+            j.put("panel3_package", c.panel3Package);
+            j.put("split_ratio",    c.splitRatio);
+            j.put("split_ratio2",   c.splitRatio2);
+            j.put("media_package",  c.mediaPackage);
+            j.put("show_lyrics",    c.showLyrics);
+            j.put("dock_position",  c.dockPosition);
+            j.put("dock_auto_hide", c.dockAutoHide);
+            j.put("show_speed",     c.showSpeed);
+            j.put("speed_unit",     c.speedUnit);
+            j.put("reduced_motion", c.reducedMotion);
+            j.put("dark_status_bar",c.darkStatusBar);
+            j.put("ui_scale",       c.uiScale);
+            JSONArray apps = new JSONArray();
+            for (String pkg : c.dockApps) apps.put(pkg);
+            j.put("dock_apps", apps);
+            File dir = ctx.getExternalFilesDir(null);
+            if (dir == null) return;
+            try (FileOutputStream out = new FileOutputStream(new File(dir, FILE))) {
+                out.write(j.toString(2).getBytes(StandardCharsets.UTF_8));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "config save failed", e);
+        }
+    }
 
     public static Config load(Context ctx) {
         Config c = new Config();

@@ -12,7 +12,9 @@ import android.net.Uri;
 import android.util.Log;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Launches an app into a freeform window bounded to a specific screen rectangle.
@@ -114,21 +116,49 @@ public class FreeformLauncher {
         return result;
     }
 
-    /** Returns all installed apps that handle media playback intents. */
+    /** Returns installed media player apps (excludes file tools, terminals, etc.). */
     public static List<AppInfo> findMediaApps(Context ctx) {
         PackageManager pm = ctx.getPackageManager();
-        // Apps that can play music typically handle this intent
-        Intent probe = new Intent(Intent.ACTION_VIEW);
-        probe.setType("audio/*");
-        List<ResolveInfo> resolved = pm.queryIntentActivities(probe, 0);
         List<AppInfo> result = new ArrayList<>();
-        for (ResolveInfo ri : resolved) {
-            AppInfo info = new AppInfo();
-            info.packageName = ri.activityInfo.packageName;
-            info.label = ri.loadLabel(pm).toString();
-            info.icon = ri.loadIcon(pm);
-            result.add(info);
+        Set<String> seen = new HashSet<>();
+
+        // Primary: apps that expose MediaBrowserService — these are real media players
+        // (Spotify, YouTube Music, Poweramp, VLC, AIMP, etc.)
+        Intent browserProbe = new Intent("android.media.browse.MediaBrowserService");
+        for (ResolveInfo ri : pm.queryIntentServices(browserProbe, 0)) {
+            String pkg = ri.serviceInfo.packageName;
+            if (seen.add(pkg)) {
+                AppInfo info = new AppInfo();
+                info.packageName = pkg;
+                info.label       = ri.loadLabel(pm).toString();
+                info.icon        = ri.loadIcon(pm);
+                result.add(info);
+            }
         }
+
+        // Fallback: audio file viewers that also appear in the app launcher
+        // (filters out Termux, file managers, system tools, etc.)
+        Set<String> launcherPkgs = new HashSet<>();
+        Intent launcherProbe = new Intent(Intent.ACTION_MAIN);
+        launcherProbe.addCategory(Intent.CATEGORY_LAUNCHER);
+        for (ResolveInfo ri : pm.queryIntentActivities(launcherProbe, 0)) {
+            launcherPkgs.add(ri.activityInfo.packageName);
+        }
+
+        Intent audioProbe = new Intent(Intent.ACTION_VIEW);
+        audioProbe.setType("audio/*");
+        for (ResolveInfo ri : pm.queryIntentActivities(audioProbe, 0)) {
+            String pkg = ri.activityInfo.packageName;
+            if (seen.add(pkg) && launcherPkgs.contains(pkg)) {
+                AppInfo info = new AppInfo();
+                info.packageName = pkg;
+                info.label       = ri.loadLabel(pm).toString();
+                info.icon        = ri.loadIcon(pm);
+                result.add(info);
+            }
+        }
+
+        result.sort((a, b) -> a.label.compareToIgnoreCase(b.label));
         return result;
     }
 

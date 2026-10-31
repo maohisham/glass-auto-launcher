@@ -7,7 +7,8 @@
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/black">
+    android:background="@android:color/black"
+    android:fitsSystemWindows="true">
 
     <!-- Wallpaper / ambient background (blurred, dimmed) -->
     <ImageView
@@ -56,11 +57,28 @@
             android:layout_marginStart="4dp"
             android:text="km/h" />
 
+        <!-- Resize panels button: hides freeform apps so the divider becomes visible/draggable -->
+        <TextView
+            android:id="@+id/btn_resize"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="↔"
+            android:textColor="#CCFFFFFF"
+            android:textSize="20sp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true" />
+
         <ImageView
             android:id="@+id/btn_settings"
             android:layout_width="36dp"
             android:layout_height="36dp"
-            android:layout_marginStart="16dp"
+            android:layout_marginStart="8dp"
             android:src="@android:drawable/ic_menu_preferences"
             android:tint="#CCFFFFFF"
             android:padding="6dp"
@@ -102,26 +120,29 @@
                 android:text="Tap ⚙ to select a map app" />
         </FrameLayout>
 
-        <!-- Divider 1 (child index 1) -->
+        <!-- Divider 1 (child index 1) — grab handle between panels -->
         <View
             android:id="@+id/divider"
-            android:layout_width="6dp"
+            android:layout_width="18dp"
             android:layout_height="match_parent"
-            android:background="#33FFFFFF"
+            android:background="#99FFFFFF"
             android:clickable="true"
             android:focusable="false" />
 
-        <!-- Media panel — child index 2 (launcher-owned) -->
+        <!-- Media panel — child index 2 (launcher-owned; hidden when a media app is launched as freeform) -->
         <LinearLayout
             android:id="@+id/media_panel"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="0.4"
             android:orientation="vertical"
-            android:padding="12dp"
-            android:background="#0CFFFFFF">
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="14dp"
+            android:paddingBottom="8dp"
+            android:background="#CC1A1A2E">
 
-            <!-- Album art + track info -->
+            <!-- Album art + track info — fills full panel width -->
             <LinearLayout
                 android:id="@+id/now_playing_row"
                 android:layout_width="match_parent"
@@ -131,8 +152,8 @@
 
                 <ImageView
                     android:id="@+id/album_art"
-                    android:layout_width="56dp"
-                    android:layout_height="56dp"
+                    android:layout_width="80dp"
+                    android:layout_height="80dp"
                     android:scaleType="centerCrop"
                     android:background="#22FFFFFF" />
 
@@ -141,16 +162,16 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:orientation="vertical"
-                    android:layout_marginStart="10dp">
+                    android:layout_marginStart="12dp">
 
                     <TextView
                         android:id="@+id/track_title"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:textColor="#FFFFFFFF"
-                        android:textSize="15sp"
+                        android:textSize="16sp"
                         android:fontFamily="sans-serif-medium"
-                        android:maxLines="1"
+                        android:maxLines="2"
                         android:ellipsize="end"
                         android:text="@string/no_media" />
 
@@ -159,34 +180,43 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:textColor="#AAFFFFFF"
-                        android:textSize="12sp"
+                        android:textSize="13sp"
+                        android:layout_marginTop="2dp"
                         android:maxLines="1"
                         android:ellipsize="end" />
+
+                    <!-- Controls inline below artist -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:layout_marginTop="8dp">
+
+                        <!-- Play/Pause -->
+                        <ImageView
+                            android:id="@+id/btn_play_pause"
+                            android:layout_width="44dp"
+                            android:layout_height="44dp"
+                            android:src="@android:drawable/ic_media_play"
+                            android:tint="#FFFFFFFF"
+                            android:padding="8dp"
+                            android:background="?android:attr/selectableItemBackgroundBorderless"
+                            android:clickable="true"
+                            android:focusable="true" />
+
+                        <!-- Skip next -->
+                        <ImageView
+                            android:id="@+id/btn_next"
+                            android:layout_width="40dp"
+                            android:layout_height="44dp"
+                            android:src="@android:drawable/ic_media_next"
+                            android:tint="#CCFFFFFF"
+                            android:padding="8dp"
+                            android:background="?android:attr/selectableItemBackgroundBorderless"
+                            android:clickable="true"
+                            android:focusable="true" />
+                    </LinearLayout>
                 </LinearLayout>
-
-                <!-- Play/Pause -->
-                <ImageView
-                    android:id="@+id/btn_play_pause"
-                    android:layout_width="40dp"
-                    android:layout_height="40dp"
-                    android:src="@android:drawable/ic_media_play"
-                    android:tint="#FFFFFFFF"
-                    android:padding="8dp"
-                    android:background="?android:attr/selectableItemBackgroundBorderless"
-                    android:clickable="true"
-                    android:focusable="true" />
-
-                <!-- Skip next -->
-                <ImageView
-                    android:id="@+id/btn_next"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
-                    android:src="@android:drawable/ic_media_next"
-                    android:tint="#CCFFFFFF"
-                    android:padding="6dp"
-                    android:background="?android:attr/selectableItemBackgroundBorderless"
-                    android:clickable="true"
-                    android:focusable="true" />
             </LinearLayout>
 
             <!-- Progress bar -->
@@ -194,7 +224,7 @@
                 android:id="@+id/progress"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="10dp"
                 android:progressTint="#FFFFFFFF"
                 android:thumbTint="#FFFFFFFF" />
 
@@ -220,9 +250,9 @@
         <!-- Divider 2 — child index 3 (visible in 3-panel mode only) -->
         <View
             android:id="@+id/divider2"
-            android:layout_width="6dp"
+            android:layout_width="18dp"
             android:layout_height="match_parent"
-            android:background="#33FFFFFF"
+            android:background="#99FFFFFF"
             android:visibility="gone"
             android:clickable="true"
             android:focusable="false" />

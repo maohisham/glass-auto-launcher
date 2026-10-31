@@ -38,12 +38,18 @@ public class SplitPanelLayout extends ViewGroup {
         void onRatioChanged(int dividerIndex, float ratio1, float ratio2);
     }
 
+    interface OnDragStartListener {
+        /** Called when the user begins dragging a divider. */
+        void onDragStart();
+    }
+
     private int   mode   = MODE_SPLIT;
     private float ratio1 = 0.55f; // panel1 fraction
     private float ratio2 = 0.50f; // panel2 fraction of remaining width (mode 3)
 
     private int dividerW;
     private OnRatioChangedListener listener;
+    private OnDragStartListener dragStartListener;
 
     // Drag state
     private int   activeDivider = 0; // 1 or 2
@@ -75,6 +81,7 @@ public class SplitPanelLayout extends ViewGroup {
     public float getRatio2() { return ratio2; }
 
     public void setOnRatioChangedListener(OnRatioChangedListener l) { listener = l; }
+    public void setOnDragStartListener(OnDragStartListener l) { dragStartListener = l; }
 
     // --- Visibility ---
 
@@ -117,6 +124,9 @@ public class SplitPanelLayout extends ViewGroup {
             case MODE_SPLIT: {
                 int p1w = (int) (ratio1 * (w - dividerW));
                 int p2w = w - p1w - dividerW;
+                android.util.Log.d("GlassAuto.Split",
+                    "SPLIT layout: totalW=" + w + " dividerW=" + dividerW
+                    + " p1w=" + p1w + " p2w=" + p2w);
                 child(0).layout(0,      0, p1w,              h);
                 child(1).layout(p1w,    0, p1w + dividerW,   h);
                 child(2).layout(p1w + dividerW, 0, w,        h);
@@ -151,8 +161,15 @@ public class SplitPanelLayout extends ViewGroup {
         int w = MeasureSpec.getSize(wSpec);
         int h = MeasureSpec.getSize(hSpec);
         for (int i = 0; i < getChildCount(); i++) {
-            child(i).measure(
-                MeasureSpec.makeMeasureSpec(w, MeasureSpec.AT_MOST),
+            View ch = child(i);
+            ViewGroup.LayoutParams lp = ch.getLayoutParams();
+            // Children with a fixed positive width (e.g. dividers) must be measured EXACTLY
+            // so that onLayout sees the correct dividerW. Without this, AT_MOST causes a plain
+            // View to report the full screen width, collapsing both panels to zero width.
+            boolean fixed = lp != null && lp.width > 0;
+            ch.measure(
+                MeasureSpec.makeMeasureSpec(fixed ? lp.width : w,
+                                            fixed ? MeasureSpec.EXACTLY : MeasureSpec.AT_MOST),
                 MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY));
         }
         applyVisibility();
@@ -175,6 +192,7 @@ public class SplitPanelLayout extends ViewGroup {
                 dragStartX     = x;
                 dragStartRatio = ratio1;
                 dragging       = true;
+                if (dragStartListener != null) dragStartListener.onDragStart();
                 return true;
             }
         }
@@ -186,6 +204,7 @@ public class SplitPanelLayout extends ViewGroup {
                 dragStartX     = x;
                 dragStartRatio = ratio2;
                 dragging       = true;
+                if (dragStartListener != null) dragStartListener.onDragStart();
                 return true;
             }
         }

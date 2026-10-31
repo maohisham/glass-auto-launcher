@@ -33,7 +33,7 @@ public class LocationHelper {
         public void onLocationChanged(Location loc) {
             if (lastLocation == null || loc.distanceTo(lastLocation) > REFRESH_KM * 1000f) {
                 lastLocation = loc;
-                notifyAll(loc.getLatitude(), loc.getLongitude());
+                notifyListeners(loc.getLatitude(), loc.getLongitude());
             }
         }
         @Override public void onProviderEnabled(String p) { }
@@ -48,24 +48,42 @@ public class LocationHelper {
     public void addListener(Listener l) { listeners.add(l); }
     public void removeListener(Listener l) { listeners.remove(l); }
 
-    /** Start GPS. Fires existing last-known location immediately if available. */
+    /** Start location updates using GPS if available, falling back to network provider. */
     public void start() {
         try {
+            boolean gpsAvailable = lm.getAllProviders().contains(LocationManager.GPS_PROVIDER);
+            String provider = gpsAvailable
+                    ? LocationManager.GPS_PROVIDER
+                    : LocationManager.NETWORK_PROVIDER;
+
             //noinspection MissingPermission
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER,
-                    INTERVAL_MS, REFRESH_KM * 1000f, gpsListener);
-            // Fire last-known immediately so callers don't wait for first GPS fix
-            //noinspection MissingPermission
-            Location last = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-            if (last == null)
+            lm.requestLocationUpdates(provider, INTERVAL_MS, REFRESH_KM * 1000f, gpsListener);
+
+            // Also register network provider as supplementary if GPS is primary
+            if (gpsAvailable && lm.getAllProviders().contains(LocationManager.NETWORK_PROVIDER)) {
+                //noinspection MissingPermission
+                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER,
+                        INTERVAL_MS, REFRESH_KM * 1000f, gpsListener);
+            }
+
+            // Fire last-known location immediately so callers don't wait for first fix
+            Location last = null;
+            if (gpsAvailable) {
+                //noinspection MissingPermission
+                last = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+            }
+            if (last == null && lm.getAllProviders().contains(LocationManager.NETWORK_PROVIDER)) {
                 //noinspection MissingPermission
                 last = lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+            }
             if (last != null) {
                 lastLocation = last;
-                notifyAll(last.getLatitude(), last.getLongitude());
+                notifyListeners(last.getLatitude(), last.getLongitude());
             }
         } catch (SecurityException e) {
             Log.w(TAG, "Location permission missing", e);
+        } catch (IllegalArgumentException e) {
+            Log.w(TAG, "Location provider not available", e);
         }
     }
 
@@ -75,7 +93,7 @@ public class LocationHelper {
 
     public Location getLastLocation() { return lastLocation; }
 
-    private void notifyAll(double lat, double lon) {
+    private void notifyListeners(double lat, double lon) {
         for (Listener l : listeners) l.onLocation(lat, lon);
     }
 }

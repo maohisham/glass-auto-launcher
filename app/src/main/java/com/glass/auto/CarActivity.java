@@ -1,20 +1,27 @@
 package com.glass.auto;
 
 import android.app.Activity;
+import android.app.Dialog;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Rect;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.format.DateFormat;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewTreeObserver;
+import android.view.Window;
 import android.view.WindowManager;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
@@ -23,6 +30,7 @@ import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 public class CarActivity extends Activity {
 
@@ -57,6 +65,19 @@ public class CarActivity extends Activity {
     private List<LyricsProvider.LyricLine> currentLyrics;
     private int  currentLyricIndex = -1;
     private long trackDurationMs   = 0;
+    private String lastTrackKey    = ""; // "title::artist" — avoids clearing lyrics on same track
+
+    // Panel launch state — only relaunch when config actually changes
+    private int    lastLaunchedPanelCount = -1;
+    private String lastLaunchedMapPkg     = "";
+    private String lastLaunchedMediaPkg   = "";
+
+    // True while CarSettingsActivity is open — suppresses bringToFrontRunnable
+    private boolean settingsOpen = false;
+
+    // Last received data — used by popup dialogs
+    private PrayerTimesManager.PrayerData lastPrayerData;
+    private WeatherManager.WeatherData    lastWeatherData;
 
     // Date format caches
     private SimpleDateFormat dateFmt;
@@ -95,6 +116,17 @@ public class CarActivity extends Activity {
                 | WindowManager.LayoutParams.FLAG_FULLSCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
 
+        // In Samsung Desktop Mode (or any freeform environment), the activity launches as a
+        // floating window. Resize to fill the full display so panel screen coordinates are correct.
+        if (isInMultiWindowMode()) {
+            android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+            getWindowManager().getDefaultDisplay().getRealMetrics(dm);
+            getWindow().setLayout(dm.widthPixels, dm.heightPixels);
+            getWindow().getAttributes().x = 0;
+            getWindow().getAttributes().y = 0;
+            getWindow().setAttributes(getWindow().getAttributes());
+        }
+
         setContentView(R.layout.activity_car);
 
         cfg     = Config.load(this);
@@ -123,16 +155,45 @@ public class CarActivity extends Activity {
         lyricsContainer = findViewById(R.id.lyrics_container);
         dock          = findViewById(R.id.dock);
 
-        findViewById(R.id.btn_settings).setOnClickListener(
-                v -> startActivity(new Intent(this, CarSettingsActivity.class)));
+        // ↔ button: move freeform apps off-screen so the divider becomes visible and draggable.
+        // After the user drags and releases, onRatioChanged → relaunchPanels at new bounds.
+        findViewById(R.id.btn_resize).setOnClickListener(v -> enterResizeMode());
+
+        findViewById(R.id.btn_settings).setOnClickListener(v -> {
+            settingsOpen = true;
+            // Cancel any pending bring-to-front so it doesn't steal focus back from settings
+            handler.removeCallbacks(bringToFrontRunnable);
+            // Move freeform windows off-screen so they don't visually block settings
+            Rect offScreen = new Rect(0, -5000, 1, -4999);
+            if (!cfg.mapPackage.isEmpty()) FreeformLauncher.launchMap(this, cfg.mapPackage, offScreen);
+            if (cfg.panelCount == 3 && !cfg.panel3Package.isEmpty())
+                FreeformLauncher.launch(this, cfg.panel3Package, offScreen);
+            if (!cfg.mediaPackage.isEmpty())
+                FreeformLauncher.launch(this, cfg.mediaPackage, offScreen);
+            handler.postDelayed(() -> startActivity(new Intent(this, CarSettingsActivity.class)), 300);
+        });
     }
 
     private void setupDock() {
         dock.configureScale(cfg.uiScale); // 0 = auto from dock width; >0 = manual
         dock.setApps(cfg.dockApps, getPackageManager());
+        dock.setOnSectionTapListener(new DockView.OnSectionTapListener() {
+            @Override public void onWeatherTap() { showWeatherPopup(); }
+            @Override public void onPrayerTap()  { showPrayerPopup(); }
+        });
         dock.setLaunchListener(pkg -> {
-            Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
-            if (i != null) startActivity(i);
+            if (splitPanel.getMode() != SplitPanelLayout.MODE_SINGLE) {
+                // In split/triple mode: tapping a dock icon fills the right media panel.
+                cfg.mediaPackage  = pkg;
+                lastLaunchedMediaPkg = pkg;
+                Config.save(this, cfg);
+                launchPanel2();
+                handler.removeCallbacks(bringToFrontRunnable);
+                handler.postDelayed(bringToFrontRunnable, 700);
+            } else {
+                Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+                if (i != null) startActivity(i);
+            }
         });
     }
 
@@ -150,6 +211,16 @@ public class CarActivity extends Activity {
             handler.postDelayed(relaunchPanelsRunnable, 300);
         });
 
+        // Hide freeform windows while user drags the divider so they can see the resize
+        splitPanel.setOnDragStartListener(() -> {
+            Rect offScreen = new Rect(0, -5000, 1, -4999);
+            if (!cfg.mapPackage.isEmpty()) FreeformLauncher.launchMap(this, cfg.mapPackage, offScreen);
+            if (cfg.panelCount == 3 && !cfg.panel3Package.isEmpty())
+                FreeformLauncher.launch(this, cfg.panel3Package, offScreen);
+            if (!cfg.mediaPackage.isEmpty())
+                FreeformLauncher.launch(this, cfg.mediaPackage, offScreen);
+        });
+
         splitPanel.getViewTreeObserver().addOnGlobalLayoutListener(
                 new ViewTreeObserver.OnGlobalLayoutListener() {
                     @Override public void onGlobalLayout() {
@@ -162,9 +233,27 @@ public class CarActivity extends Activity {
     private final Runnable relaunchPanelsRunnable = this::launchFreeformPanels;
 
     private void launchFreeformPanels() {
+        lastLaunchedPanelCount = cfg.panelCount;
+        lastLaunchedMapPkg     = cfg.mapPackage;
+        lastLaunchedMediaPkg   = cfg.mediaPackage;
+
         launchPanel1();
+        if (cfg.panelCount >= 2) launchPanel2();
         if (cfg.panelCount == 3) launchPanel3();
+
+        // Reclaim CarActivity after freeform apps steal focus, unless settings is open
+        if (!settingsOpen) {
+            handler.removeCallbacks(bringToFrontRunnable);
+            handler.postDelayed(bringToFrontRunnable, 700);
+        }
     }
+
+    private final Runnable bringToFrontRunnable = () -> {
+        if (settingsOpen) return; // don't reclaim focus while settings is visible
+        Intent self = new Intent(this, CarActivity.class);
+        self.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        startActivity(self);
+    };
 
     private void launchPanel1() {
         if (cfg.mapPackage.isEmpty()) { mapHint.setVisibility(View.VISIBLE); return; }
@@ -174,6 +263,40 @@ public class CarActivity extends Activity {
         Rect bounds = new Rect(loc[0], loc[1],
                 loc[0] + mapPanel.getWidth(), loc[1] + mapPanel.getHeight());
         FreeformLauncher.launchMap(this, cfg.mapPackage, bounds);
+    }
+
+    private void launchPanel2() {
+        // If a media app is selected, launch it as freeform to fill the media panel.
+        // Hide built-in media controls (behind the freeform window) to avoid a ghost UI.
+        boolean hasFreeformMedia = !cfg.mediaPackage.isEmpty();
+        setBuiltinMediaVisible(!hasFreeformMedia);
+        if (!hasFreeformMedia) return;
+        View mediaPanel = splitPanel.getChildAt(2);
+        if (mediaPanel == null || mediaPanel.getWidth() == 0) return;
+        int[] loc = new int[2];
+        mediaPanel.getLocationOnScreen(loc);
+        Rect bounds = new Rect(loc[0], loc[1],
+                loc[0] + mediaPanel.getWidth(), loc[1] + mediaPanel.getHeight());
+        FreeformLauncher.launch(this, cfg.mediaPackage, bounds);
+    }
+
+    /** Moves all freeform apps off-screen so CarActivity's divider is visible and touchable. */
+    private void enterResizeMode() {
+        Rect offScreen = new Rect(0, -5000, 1, -4999);
+        if (!cfg.mapPackage.isEmpty()) FreeformLauncher.launchMap(this, cfg.mapPackage, offScreen);
+        if (!cfg.mediaPackage.isEmpty()) FreeformLauncher.launch(this, cfg.mediaPackage, offScreen);
+        if (cfg.panelCount == 3 && !cfg.panel3Package.isEmpty())
+            FreeformLauncher.launch(this, cfg.panel3Package, offScreen);
+        // After apps move off-screen, bring CarActivity to front so the divider is touchable
+        handler.removeCallbacks(bringToFrontRunnable);
+        handler.postDelayed(bringToFrontRunnable, 500);
+    }
+
+    private void setBuiltinMediaVisible(boolean visible) {
+        int vis = visible ? View.VISIBLE : View.GONE;
+        findViewById(R.id.now_playing_row).setVisibility(vis);
+        progress.setVisibility(vis);
+        findViewById(R.id.lyrics_scroll).setVisibility(vis);
     }
 
     private void launchPanel3() {
@@ -218,12 +341,16 @@ public class CarActivity extends Activity {
         // Weather (triggers on location, refreshes every 30 min)
         weather = new WeatherManager();
         weather.setContext(this);
-        weather.setListener(d -> dock.setWeather(d.emoji, (int) d.tempC + "°", d.cityName));
+        weather.setListener(d -> {
+            lastWeatherData = d;
+            dock.setWeather(d.emoji, (int) d.tempC + "°", d.cityName);
+        });
         location.addListener(weather);
 
         // Prayer times (triggers on location, ticks every minute)
         prayer = new PrayerTimesManager();
         prayer.setListener(d -> {
+            lastPrayerData = d;
             dock.setPrayerTimes(d.currentPrayer, d.currentTime,
                     d.nextPrayer, d.nextTime,
                     d.zoneName, d.hijriDate);
@@ -244,6 +371,28 @@ public class CarActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        settingsOpen = false; // returning from settings or bringToFront
+
+        cfg = Config.load(this);
+        dock.setApps(cfg.dockApps, getPackageManager());
+        dock.configureScale(cfg.uiScale);
+
+        int mode = cfg.panelCount == 1 ? SplitPanelLayout.MODE_SINGLE
+                 : cfg.panelCount == 3 ? SplitPanelLayout.MODE_TRIPLE
+                 : SplitPanelLayout.MODE_SPLIT;
+        splitPanel.setMode(mode);
+        splitPanel.setRatios(cfg.splitRatio, cfg.splitRatio2);
+
+        // Only relaunch freeform panels when the relevant config actually changed.
+        // Relaunching on every resume causes an infinite Maps-focus-steal loop.
+        boolean panelChanged = cfg.panelCount   != lastLaunchedPanelCount
+                || !cfg.mapPackage.equals(lastLaunchedMapPkg)
+                || !cfg.mediaPackage.equals(lastLaunchedMediaPkg);
+        if (panelChanged) {
+            handler.removeCallbacks(relaunchPanelsRunnable);
+            handler.postDelayed(relaunchPanelsRunnable, 300);
+        }
+
         ComponentName cn = new ComponentName(this, MediaListenerService.class);
         mediaCtrl.start(cn);
         speedMonitor.start();
@@ -258,15 +407,26 @@ public class CarActivity extends Activity {
         handler.removeCallbacks(tickRunnable);
         handler.removeCallbacks(prayerTickRunnable);
         handler.removeCallbacks(relaunchPanelsRunnable);
+        // bringToFrontRunnable is intentionally NOT cancelled here — it must fire after
+        // Maps takes focus so CarActivity can reclaim the foreground. It is cancelled
+        // explicitly before opening Settings to avoid interrupting the settings flow.
         location.stop();
         speedMonitor.stop();
         mediaCtrl.stop();
     }
 
     @Override
+    public void onMultiWindowModeChanged(boolean isInMultiWindowMode, android.content.res.Configuration newConfig) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig);
+        // Relaunch panels after window resize (e.g. user maximizes in Samsung Desktop Mode)
+        handler.removeCallbacks(relaunchPanelsRunnable);
+        handler.postDelayed(relaunchPanelsRunnable, 400);
+    }
+
+    @Override
     protected void onDestroy() {
         super.onDestroy();
-        lyricsProvider.cancel();
+        if (lyricsProvider != null) lyricsProvider.cancel();
     }
 
     // -------------------------------------------------------------------------
@@ -316,15 +476,24 @@ public class CarActivity extends Activity {
         public void onTrackChanged(String title, String artist, Bitmap art) {
             String t = title  != null ? title  : "";
             String a = artist != null ? artist : "";
+            String key = t + "::" + a;
+
+            albumArt.setImageBitmap(art);
+
+            // Same track (e.g. session reconnect after bringToFront) — keep lyrics as-is
+            if (key.equals(lastTrackKey)) return;
+            lastTrackKey = key;
+
             trackTitle.setText(t.isEmpty() ? getString(R.string.no_media) : t);
             trackArtist.setText(a);
-            albumArt.setImageBitmap(art);
             currentLyricIndex = -1;
             currentLyrics     = null;
             lyricsContainer.removeAllViews();
 
             if (cfg.showLyrics && !t.isEmpty()) {
+                final String fetchKey = key;
                 lyricsProvider.fetch(t, a, lyrics -> {
+                    if (!fetchKey.equals(lastTrackKey)) return; // track changed while fetching
                     currentLyrics = lyrics;
                     currentLyricIndex = -1;
                     lyricsContainer.removeAllViews();
@@ -365,4 +534,341 @@ public class CarActivity extends Activity {
             lyricsContainer.removeAllViews();
         }
     };
+
+    // -------------------------------------------------------------------------
+    // Popup dialogs
+
+    private void showPrayerPopup() {
+        PrayerTimesManager.PrayerData data = prayer != null ? prayer.getCached() : lastPrayerData;
+        if (data == null || data.times.isEmpty()) return;
+
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout root = buildPopupRoot();
+        scroll.addView(root);
+
+        addPopupTitle(root, "Waktu Solat");
+        if (!data.zoneName.isEmpty())   addPopupSub(root, "📍 " + data.zoneName);
+        if (!data.hijriDate.isEmpty())  addPopupSub(root, "🗓 " + data.hijriDate);
+        addPopupDivider(root);
+
+        // All prayers in display order, with Syuruk inserted after Subuh
+        String[][] rows = {
+            {"Subuh",   data.times.get("Subuh")},
+            {"Syuruk",  data.syurukTime},
+            {"Zohor",   data.times.get("Zohor")},
+            {"Asar",    data.times.get("Asar")},
+            {"Maghrib", data.times.get("Maghrib")},
+            {"Isyak",   data.times.get("Isyak")},
+        };
+        for (String[] row : rows) {
+            String name = row[0], raw = row[1];
+            if (raw == null || raw.isEmpty()) continue;
+            boolean isCurrent = name.equals(data.currentPrayer);
+            boolean isNext    = name.equals(data.nextPrayer);
+            addPrayerRow(root, name, popupTo12h(raw), isCurrent, isNext);
+        }
+
+        addPopupDivider(root);
+        String cd = popupCountdown(data.nextTime);
+        if (!cd.isEmpty()) {
+            addPopupSub(root, "Next: " + data.nextPrayer + " — " + cd);
+        }
+
+        dialog.setContentView(scroll);
+        popupWindow(dialog, 460);
+        dialog.show();
+    }
+
+    private void showWeatherPopup() {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout root = buildPopupRoot();
+        scroll.addView(root);
+
+        WeatherManager.WeatherData cur = lastWeatherData;
+        if (cur != null) {
+            addPopupTitle(root, cur.emoji + "  " + (int) cur.tempC + "°C  " + cur.description);
+            if (!cur.cityName.isEmpty()) addPopupSub(root, "📍 " + cur.cityName);
+            addPopupSub(root, "Humidity: " + cur.humidity + "%");
+        } else {
+            addPopupTitle(root, "Weather");
+        }
+        addPopupDivider(root);
+
+        TextView loadingTv = new TextView(this);
+        loadingTv.setText("Loading forecast…");
+        loadingTv.setTextColor(0x88FFFFFF);
+        loadingTv.setTextSize(13f);
+        loadingTv.setPadding(0, 8, 0, 8);
+        root.addView(loadingTv);
+
+        dialog.setContentView(scroll);
+        popupWindow(dialog, 520);
+        dialog.show();
+
+        weather.fetchForecast(forecast -> {
+            if (!dialog.isShowing()) return;
+            root.removeView(loadingTv);
+            fillForecastInto(root, forecast);
+        });
+    }
+
+    private void fillForecastInto(LinearLayout root, WeatherManager.ForecastData forecast) {
+        if (!forecast.hourly.isEmpty()) {
+            addPopupSection(root, "Next 24 Hours");
+            HorizontalScrollView hsv = new HorizontalScrollView(this);
+            hsv.setHorizontalScrollBarEnabled(false);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(0, 4, 0, 4);
+            for (WeatherManager.HourlyPoint p : forecast.hourly) {
+                row.addView(buildHourlyCell(p));
+            }
+            hsv.addView(row);
+            root.addView(hsv);
+            addPopupDivider(root);
+        }
+
+        if (!forecast.daily.isEmpty()) {
+            addPopupSection(root, "7-Day Forecast");
+            String[] dayNames = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+            for (WeatherManager.DailyPoint p : forecast.daily) {
+                Calendar cal = Calendar.getInstance();
+                cal.setTimeInMillis(p.timeEpoch * 1000);
+                String dayName = dayNames[cal.get(Calendar.DAY_OF_WEEK) - 1];
+                addDailyRow(root, dayName, p);
+            }
+            addPopupDivider(root);
+        }
+
+        if (forecast.aqi != null) {
+            addPopupSection(root, "Air Quality");
+            addPopupSub(root, forecast.aqi.label() + " — AQI " + forecast.aqi.europeanAqi);
+            addPopupSub(root, String.format(Locale.US, "PM2.5: %.1f µg/m³   PM10: %.1f µg/m³",
+                    forecast.aqi.pm25, forecast.aqi.pm10));
+        }
+    }
+
+    private View buildHourlyCell(WeatherManager.HourlyPoint p) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(Gravity.CENTER_HORIZONTAL);
+        int pad = dp(10);
+        cell.setPadding(pad, dp(6), pad, dp(6));
+
+        Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(p.timeEpoch * 1000);
+        int h = cal.get(Calendar.HOUR_OF_DAY);
+        String ampm = h < 12 ? "AM" : "PM";
+        h = h % 12; if (h == 0) h = 12;
+
+        addCellText(cell, h + " " + ampm, 11f, 0xAAFFFFFF, false);
+        addCellText(cell, emojiFor(p.weatherCode), 20f, 0xFFFFFFFF, false);
+        addCellText(cell, (int) p.tempC + "°", 13f, 0xFFFFFFFF, true);
+        if (p.precipPct > 0)
+            addCellText(cell, p.precipPct + "%", 11f, 0xFF6EB5FF, false);
+        return cell;
+    }
+
+    private void addDailyRow(LinearLayout parent, String dayName, WeatherManager.DailyPoint p) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(6), 0, dp(6));
+
+        TextView day = new TextView(this);
+        day.setText(dayName);
+        day.setTextColor(0xFFFFFFFF);
+        day.setTextSize(14f);
+        day.setTypeface(null, Typeface.BOLD);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), LinearLayout.LayoutParams.WRAP_CONTENT);
+        day.setLayoutParams(lp);
+        row.addView(day);
+
+        TextView emoji = new TextView(this);
+        emoji.setText(emojiFor(p.weatherCode));
+        emoji.setTextSize(18f);
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(dp(36), LinearLayout.LayoutParams.WRAP_CONTENT);
+        emoji.setLayoutParams(lp2);
+        row.addView(emoji);
+
+        TextView temps = new TextView(this);
+        temps.setText((int) p.tempMaxC + "° / " + (int) p.tempMinC + "°");
+        temps.setTextColor(0xFFFFFFFF);
+        temps.setTextSize(13f);
+        LinearLayout.LayoutParams lp3 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        temps.setLayoutParams(lp3);
+        row.addView(temps);
+
+        if (p.precipPct > 0) {
+            TextView rain = new TextView(this);
+            rain.setText("💧 " + p.precipPct + "%");
+            rain.setTextColor(0xFF6EB5FF);
+            rain.setTextSize(12f);
+            row.addView(rain);
+        }
+        parent.addView(row);
+    }
+
+    private void addCellText(LinearLayout parent, String text, float size, int color, boolean bold) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextSize(size);
+        tv.setTextColor(color);
+        tv.setGravity(Gravity.CENTER);
+        if (bold) tv.setTypeface(null, Typeface.BOLD);
+        parent.addView(tv);
+    }
+
+    private void addPrayerRow(LinearLayout parent, String name, String time12,
+                              boolean isCurrent, boolean isNext) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(8), 0, dp(8));
+
+        if (isCurrent) {
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(0x22FFFFFF);
+            bg.setCornerRadius(dp(6));
+            row.setBackground(bg);
+            row.setPadding(dp(8), dp(8), dp(8), dp(8));
+        }
+
+        TextView nameTv = new TextView(this);
+        nameTv.setText(name);
+        nameTv.setTextColor(isCurrent ? 0xFFFFFFFF : 0xAAFFFFFF);
+        nameTv.setTextSize(15f);
+        if (isCurrent) nameTv.setTypeface(null, Typeface.BOLD);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        nameTv.setLayoutParams(lp);
+        row.addView(nameTv);
+
+        TextView timeTv = new TextView(this);
+        timeTv.setText(time12);
+        timeTv.setTextColor(isCurrent ? 0xFFFFFFFF : 0x88FFFFFF);
+        timeTv.setTextSize(15f);
+        if (isCurrent) timeTv.setTypeface(null, Typeface.BOLD);
+        row.addView(timeTv);
+
+        if (isNext) {
+            TextView badge = new TextView(this);
+            badge.setText("  next");
+            badge.setTextColor(0xFF6EB5FF);
+            badge.setTextSize(11f);
+            row.addView(badge);
+        }
+        parent.addView(row);
+    }
+
+    // --- Popup builder helpers ---
+
+    private LinearLayout buildPopupRoot() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(24), dp(20), dp(24), dp(24));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xF0060C18);
+        bg.setCornerRadius(dp(16));
+        bg.setStroke(1, 0x33FFFFFF);
+        root.setBackground(bg);
+        return root;
+    }
+
+    private void popupWindow(Dialog dialog, int widthDp) {
+        dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+        dialog.getWindow().setLayout(dp(widthDp), WindowManager.LayoutParams.WRAP_CONTENT);
+        dialog.getWindow().setGravity(Gravity.CENTER);
+    }
+
+    private void addPopupTitle(LinearLayout parent, String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextColor(0xFFFFFFFF);
+        tv.setTextSize(18f);
+        tv.setTypeface(null, Typeface.BOLD);
+        tv.setPadding(0, 0, 0, dp(4));
+        parent.addView(tv);
+    }
+
+    private void addPopupSub(LinearLayout parent, String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextColor(0xAAFFFFFF);
+        tv.setTextSize(13f);
+        tv.setPadding(0, dp(2), 0, dp(2));
+        parent.addView(tv);
+    }
+
+    private void addPopupSection(LinearLayout parent, String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextColor(0x88FFFFFF);
+        tv.setTextSize(11f);
+        tv.setAllCaps(true);
+        tv.setLetterSpacing(0.1f);
+        tv.setPadding(0, dp(4), 0, dp(6));
+        parent.addView(tv);
+    }
+
+    private void addPopupDivider(LinearLayout parent) {
+        View v = new View(this);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 1);
+        lp.setMargins(0, dp(10), 0, dp(10));
+        v.setLayoutParams(lp);
+        v.setBackgroundColor(0x22FFFFFF);
+        parent.addView(v);
+    }
+
+    private int dp(int val) {
+        return Math.round(val * getResources().getDisplayMetrics().density);
+    }
+
+    private static String popupTo12h(String t) {
+        if (t == null || t.isEmpty()) return t;
+        try {
+            int colon = t.indexOf(':');
+            if (colon < 1) return t;
+            int h = Integer.parseInt(t.substring(0, colon).trim());
+            String min = t.substring(colon + 1, Math.min(colon + 3, t.length()));
+            String ampm = h < 12 ? "AM" : "PM";
+            h = h % 12; if (h == 0) h = 12;
+            return h + ":" + min + " " + ampm;
+        } catch (Exception e) { return t; }
+    }
+
+    private static String popupCountdown(String t) {
+        if (t == null || t.isEmpty()) return "";
+        try {
+            int colon = t.indexOf(':');
+            if (colon < 1) return "";
+            int nextH = Integer.parseInt(t.substring(0, colon).trim());
+            int nextM = Integer.parseInt(t.substring(colon + 1, Math.min(colon + 3, t.length())).trim());
+            Calendar now = Calendar.getInstance();
+            int diff = (nextH * 60 + nextM) - (now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE));
+            if (diff <= 0) diff += 24 * 60;
+            int h = diff / 60, m = diff % 60;
+            return h > 0 ? "in " + h + "h " + m + "m" : "in " + m + "m";
+        } catch (Exception e) { return ""; }
+    }
+
+    private static String emojiFor(int code) {
+        if (code == 0)       return "☀";
+        if (code <= 2)       return "🌤";
+        if (code == 3)       return "☁";
+        if (code <= 48)      return "🌫";
+        if (code <= 55)      return "🌦";
+        if (code <= 65)      return "🌧";
+        if (code <= 67)      return "🌨";
+        if (code <= 77)      return "❄";
+        if (code <= 82)      return "🌦";
+        if (code <= 86)      return "🌨";
+        if (code <= 99)      return "⛈";
+        return "🌡";
+    }
 }

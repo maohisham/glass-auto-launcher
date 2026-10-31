@@ -2,23 +2,21 @@ package com.glass.auto;
 
 import android.app.Activity;
 import android.content.pm.PackageManager;
+import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
-import java.io.File;
-import java.io.FileOutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -34,11 +32,13 @@ public class CarSettingsActivity extends Activity {
         super.onCreate(savedInstanceState);
         cfg = Config.load(this);
 
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(0xFF0A0A0A);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(48, 48, 48, 48);
-        root.setBackgroundColor(0xFF0A0A0A);
-        setContentView(root);
+        root.setPadding(48, 48, 48, 96);
+        scroll.addView(root);
+        setContentView(scroll);
 
         mapApps   = FreeformLauncher.findMapApps(this);
         mediaApps = FreeformLauncher.findMediaApps(this);
@@ -82,6 +82,9 @@ public class CarSettingsActivity extends Activity {
             if (Math.abs(cfg.uiScale - scaleValues[i]) < 0.01f) { scaleSel = i; break; }
         }
         addSpinner(root, scaleLabels, scaleSel, idx -> cfg.uiScale = scaleValues[idx]);
+
+        addSection(root, "Dock Apps (tap to toggle)");
+        addDockAppsPicker(root, allApps);
 
         Button save = new Button(this);
         save.setText("Save & Close");
@@ -148,33 +151,42 @@ public class CarSettingsActivity extends Activity {
     }
 
     private void saveConfig() {
-        try {
-            JSONObject j = new JSONObject();
-            j.put("panel_count",    cfg.panelCount);
-            j.put("map_package",    cfg.mapPackage);
-            j.put("panel3_package", cfg.panel3Package);
-            j.put("split_ratio",    cfg.splitRatio);
-            j.put("split_ratio2",   cfg.splitRatio2);
-            j.put("media_package",  cfg.mediaPackage);
-            j.put("show_lyrics",    cfg.showLyrics);
-            j.put("show_speed",     cfg.showSpeed);
-            j.put("speed_unit",     cfg.speedUnit);
-            j.put("dock_position",  cfg.dockPosition);
-            j.put("dock_auto_hide", cfg.dockAutoHide);
-            j.put("reduced_motion", cfg.reducedMotion);
-            j.put("ui_scale",       cfg.uiScale);
-            JSONArray apps = new JSONArray();
-            for (String pkg : cfg.dockApps) apps.put(pkg);
-            j.put("dock_apps", apps);
+        Config.save(this, cfg);
+    }
 
-            File dir = getExternalFilesDir(null);
-            if (dir == null) return;
-            File f = new File(dir, "config.json");
-            try (FileOutputStream out = new FileOutputStream(f)) {
-                out.write(j.toString(2).getBytes(StandardCharsets.UTF_8));
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+    private void addDockAppsPicker(ViewGroup parent, List<FreeformLauncher.AppInfo> apps) {
+        for (FreeformLauncher.AppInfo app : apps) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(0, 8, 0, 8);
+
+            CheckBox cb = new CheckBox(this);
+            cb.setChecked(cfg.dockApps.contains(app.packageName));
+            cb.setOnCheckedChangeListener((v, checked) -> {
+                if (checked) { if (!cfg.dockApps.contains(app.packageName)) cfg.dockApps.add(app.packageName); }
+                else cfg.dockApps.remove(app.packageName);
+            });
+
+            ImageView icon = new ImageView(this);
+            Drawable d = app.icon;
+            if (d != null) icon.setImageDrawable(d);
+            int iconSz = (int)(40 * getResources().getDisplayMetrics().density);
+            icon.setLayoutParams(new LinearLayout.LayoutParams(iconSz, iconSz));
+            icon.setPadding(8, 0, 16, 0);
+
+            TextView label = new TextView(this);
+            label.setText(app.label);
+            label.setTextColor(0xFFFFFFFF);
+            label.setTextSize(14f);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            label.setLayoutParams(lp);
+
+            row.addView(cb);
+            row.addView(icon);
+            row.addView(label);
+            row.setOnClickListener(v -> cb.setChecked(!cb.isChecked()));
+            parent.addView(row);
         }
     }
 
