@@ -19,7 +19,8 @@ import java.util.List;
 /**
  * Full-width glass dock drawn entirely in Canvas for performance.
  *
- * Layout (left → right): [Prayer (270dp)] | [Icons (flex)] | [Weather (110dp)] | [Clock (130dp)] | [Drawer (50dp)]
+ * Layout (left → right): [Prayer (300dp)] | [Icons (flex)] | [Weather (105dp)] | [Clock (150dp)] | [Drawer (44dp)]
+ * Every text size is a fraction of the dock height so the content scales when the dock is resized.
  *
  * All data is pushed in via setters. onDraw() does zero allocation — all strings
  * and computations are pre-cached in the setters or in updatePaintSizes().
@@ -93,12 +94,13 @@ public class DockView extends View {
     private OnAppDrawerTapListener drawerTapListener;
 
     // Section widths in dp
-    private static final float CLOCK_W    = 130f;
-    private static final float WEATHER_W  = 110f;
-    private static final float PRAYER_W   = 310f;
-    private static final float DRAWER_W   = 50f;
+    private static final float CLOCK_W    = 150f;
+    private static final float WEATHER_W  = 105f;
+    private static final float PRAYER_W   = 300f;
+    private static final float DRAWER_W   = 44f;
     private static final int   MAX_ICONS  = 6;
     private static final float ICON_SIZE  = 40f;
+    private static final float ICON_MAX_H = 0.62f; // icon height as a fraction of the dock height
     private static final float SEL_RADIUS = 8f;
     private static final float REF_WIDTH_PX = 1280f;
 
@@ -295,32 +297,42 @@ public class DockView extends View {
         float xClock   = xWeather + weatherW;
         float xDrawer  = xClock + clockW;
 
+        float m = h * 0.14f;
         canvas.drawLine(0, 1f, w, 1f, rimPaint);
-        canvas.drawLine(xIcons,   8 * dp, xIcons,   h - 8 * dp, rimPaint);
-        canvas.drawLine(xWeather, 8 * dp, xWeather, h - 8 * dp, rimPaint);
-        canvas.drawLine(xClock,   8 * dp, xClock,   h - 8 * dp, rimPaint);
-        canvas.drawLine(xDrawer,  8 * dp, xDrawer,  h - 8 * dp, rimPaint);
+        canvas.drawLine(xIcons,   m, xIcons,   h - m, rimPaint);
+        canvas.drawLine(xWeather, m, xWeather, h - m, rimPaint);
+        canvas.drawLine(xClock,   m, xClock,   h - m, rimPaint);
+        canvas.drawLine(xDrawer,  m, xDrawer,  h - m, rimPaint);
 
-        drawPrayer(canvas, 0, prayerW, cy, h);
-        drawIcons(canvas, xIcons, iconW, cy);
-        drawWeather(canvas, xWeather, weatherW, cy);
-        drawClock(canvas, xClock, clockW, cy);
+        drawPrayer(canvas, 0, prayerW, h);
+        drawIcons(canvas, xIcons, iconW, cy, iconPx(h));
+        drawWeather(canvas, xWeather, weatherW, h);
+        drawClock(canvas, xClock, clockW, h);
         drawAppDrawer(canvas, xDrawer, drawerW, cy);
     }
 
-    private void drawClock(Canvas c, float x, float w, float cy) {
-        clockPaint.getTextBounds(clockText, 0, clockText.length(), textBounds);
-        float timeH = textBounds.height();
-        float timeY = cy - 4 * dp;
-        c.drawText(clockText, x + (w - textBounds.width()) / 2f, timeY, clockPaint);
-        datePaint.getTextBounds(dateText, 0, dateText.length(), textBounds);
-        c.drawText(dateText, x + (w - textBounds.width()) / 2f,
-                timeY + timeH * 0.5f + 14 * dp, datePaint);
+    private float iconPx(float h) {
+        return Math.min(ICON_SIZE * rawDp, h * ICON_MAX_H);
     }
 
-    private void drawIcons(Canvas c, float startX, float totalW, float cy) {
+    /** Time on top, weekday/date in the middle, Hijri date at the bottom. */
+    private void drawClock(Canvas c, float x, float w, float h) {
+        float pad = 6 * dp;
+        fitText(clockPaint, clockText, w - 2 * pad, h * 0.38f);
+        c.drawText(clockText, x + (w - clockPaint.measureText(clockText)) / 2f, h * 0.45f, clockPaint);
+
+        fitText(datePaint, dateText, w - 2 * pad, h * 0.20f);
+        c.drawText(dateText, x + (w - datePaint.measureText(dateText)) / 2f, h * 0.71f, datePaint);
+
+        if (!prayerHijri.isEmpty()) {
+            infoPaint.setColor(COL_INFO);
+            fitText(infoPaint, prayerHijri, w - 2 * pad, h * 0.18f);
+            c.drawText(prayerHijri, x + (w - infoPaint.measureText(prayerHijri)) / 2f, h * 0.93f, infoPaint);
+        }
+    }
+
+    private void drawIcons(Canvas c, float startX, float totalW, float cy, float iconPx) {
         if (items.isEmpty()) return;
-        float iconPx = ICON_SIZE * rawDp;
         int   n      = items.size();
         float gap    = (totalW - n * iconPx) / (n + 1f);
 
@@ -356,88 +368,79 @@ public class DockView extends View {
         }
     }
 
-    private void drawWeather(Canvas c, float x, float w, float cy) {
-        float topShift = hasCity ? 8f * dp : 4f * dp;
-        valuePaintLarge.getTextBounds(emojiTempStr, 0, emojiTempStr.length(), textBounds);
-        c.drawText(emojiTempStr, x + (w - textBounds.width()) / 2f, cy - topShift, valuePaintLarge);
+    private void drawWeather(Canvas c, float x, float w, float h) {
+        float pad = 6 * dp;
+        fitText(valuePaintLarge, emojiTempStr, w - 2 * pad, h * 0.38f);
+        c.drawText(emojiTempStr, x + (w - valuePaintLarge.measureText(emojiTempStr)) / 2f,
+                hasCity ? h * 0.50f : h * 0.62f, valuePaintLarge);
 
         if (hasCity) {
             // Truncate to fit width (truncation is fast; no new Paint created)
             String city = weatherCity;
-            cityPaint.getTextBounds(city, 0, city.length(), textBounds);
-            while (textBounds.width() > w - 8 * dp && city.length() > 3) {
+            cityPaint.setTextSize(h * 0.21f);
+            while (cityPaint.measureText(city) > w - 2 * pad && city.length() > 3) {
                 city = city.substring(0, city.length() - 1);
-                cityPaint.getTextBounds(city + "…", 0, city.length() + 1, textBounds);
             }
             if (!city.equals(weatherCity)) city = city + "…";
-            cityPaint.getTextBounds(city, 0, city.length(), textBounds);
-            c.drawText(city, x + (w - textBounds.width()) / 2f,
-                    cy - topShift + 20f * dp, cityPaint);
+            c.drawText(city, x + (w - cityPaint.measureText(city)) / 2f, h * 0.84f, cityPaint);
         }
     }
 
-    private void drawPrayer(Canvas c, float x, float w, float cy, float h) {
-        float pad = 10 * dp;
+    /** Three columns: NOW | NEXT | countdown pill. Every row sits on the same baseline across columns. */
+    private void drawPrayer(Canvas c, float x, float w, float h) {
+        float pad  = 8 * dp;
+        float colW = (w - 2 * pad) / 3f;
 
-        dimPaint.setTextSize(h * 0.14f);
         if (prayerCurrent.isEmpty() && prayerNext.isEmpty()) {
-            c.drawText("Prayer loading…", x + pad, cy + 5 * dp, dimPaint);
+            dimPaint.setTextSize(h * 0.22f);
+            c.drawText("Prayer loading…", x + pad, h * 0.58f, dimPaint);
             return;
         }
 
-        // Row 1: location · hijri date, centred, light teal
-        if (hasInfo) {
-            infoPaint.setColor(COL_INFO);
-            fitText(infoPaint, infoLineStr, w - 2 * pad, h * 0.17f);
-            infoPaint.getTextBounds(infoLineStr, 0, infoLineStr.length(), textBounds);
-            c.drawText(infoLineStr, x + (w - textBounds.width()) / 2f, h * 0.18f, infoPaint);
-        }
+        // Column 1: current prayer
+        float c1 = x + pad + colW / 2f;
+        drawPrayerColumn(c, c1, colW - 6 * dp, "NOW",
+                prayerCurrent.isEmpty() ? "—" : prayerCurrent, currentTime12,
+                h * 0.29f, h * 0.24f, COL_INFO, h);
+        c.drawLine(x + pad + colW, h * 0.2f, x + pad + colW, h * 0.8f, rimPaint);
 
-        // Left column (centred): next prayer name + time
-        float leftW = w * 0.56f - pad;
-        float lcx   = x + pad + leftW / 2f;
+        // Column 2: next prayer (larger)
+        float c2 = x + pad + colW * 1.5f;
+        drawPrayerColumn(c, c2, colW - 6 * dp, "NEXT",
+                prayerNext.isEmpty() ? "—" : prayerNext, nextTime12,
+                h * 0.35f, h * 0.29f, COL_TIME, h);
 
-        String name = prayerNext.isEmpty() ? "—" : prayerNext;
-        fitText(valuePaint, name, leftW, h * 0.31f);
-        valuePaint.getTextBounds(name, 0, name.length(), textBounds);
-        c.drawText(name, lcx - textBounds.width() / 2f, h * 0.55f, valuePaint);
-
-        if (!nextTime12.isEmpty()) {
-            fitText(timePaint, nextTime12, leftW, h * 0.24f);
-            timePaint.getTextBounds(nextTime12, 0, nextTime12.length(), textBounds);
-            c.drawText(nextTime12, lcx - textBounds.width() / 2f, h * 0.80f, timePaint);
-        }
-
-        // Right column: countdown pill
+        // Column 3: countdown pill
         if (!countdownStr.isEmpty()) {
-            float px0 = x + w * 0.58f, px1 = x + w - pad;
-            float py0 = h * 0.27f,     py1 = h * 0.85f;
-            selRect.set(px0, py0, px1, py1);
-            c.drawRoundRect(selRect, 12 * dp, 12 * dp, pillFill);
-            c.drawRoundRect(selRect, 12 * dp, 12 * dp, pillStroke);
+            float px0 = x + pad + colW * 2f + 4 * dp, px1 = x + w - pad;
+            selRect.set(px0, h * 0.10f, px1, h * 0.90f);
+            c.drawRoundRect(selRect, 10 * dp, 10 * dp, pillFill);
+            c.drawRoundRect(selRect, 10 * dp, 10 * dp, pillStroke);
 
-            float pcx = (px0 + px1) / 2f;
+            float pcx = (px0 + px1) / 2f, inner = px1 - px0 - 12 * dp;
             cdPaint.setColor(COL_TAG);
-            fitText(cdPaint, "NEXT IN", px1 - px0 - 12 * dp, h * 0.125f);
-            cdPaint.getTextBounds("NEXT IN", 0, 7, textBounds);
-            c.drawText("NEXT IN", pcx - textBounds.width() / 2f, py0 + (py1 - py0) * 0.34f, cdPaint);
+            fitText(cdPaint, "NEXT IN", inner, h * 0.18f);
+            c.drawText("NEXT IN", pcx - cdPaint.measureText("NEXT IN") / 2f, h * 0.35f, cdPaint);
 
-            fitText(countPaint, countdownStr, px1 - px0 - 12 * dp, h * 0.29f);
-            countPaint.getTextBounds(countdownStr, 0, countdownStr.length(), textBounds);
-            c.drawText(countdownStr, pcx - textBounds.width() / 2f, py0 + (py1 - py0) * 0.86f, countPaint);
+            fitText(countPaint, countdownStr, inner, h * 0.36f);
+            c.drawText(countdownStr, pcx - countPaint.measureText(countdownStr) / 2f, h * 0.78f, countPaint);
         }
+    }
 
-        // Footer: "NOW  Isyak 7:30 PM"
-        if (!prayerCurrent.isEmpty()) {
-            String lead = "NOW  ";
-            String foot = prayerCurrent;
-            if (!currentTime12.isEmpty()) foot += "  " + currentTime12;
-            fitText(infoPaint, lead + foot, w - 2 * pad, h * 0.15f);
-            float fx = x + (w - infoPaint.measureText(lead + foot)) / 2f;
-            infoPaint.setColor(COL_TAG);
-            c.drawText(lead, fx, h * 0.97f, infoPaint);
-            infoPaint.setColor(0xFFFFFFFF);
-            c.drawText(foot, fx + infoPaint.measureText(lead), h * 0.97f, infoPaint);
+    /** Gold tag, white bold name, coloured time — all centred on {@code cx}. */
+    private void drawPrayerColumn(Canvas c, float cx, float maxW, String tag, String name, String time,
+                                  float nameSize, float timeSize, int timeColor, float h) {
+        cdPaint.setColor(COL_TAG);
+        fitText(cdPaint, tag, maxW, h * 0.18f);
+        c.drawText(tag, cx - cdPaint.measureText(tag) / 2f, h * 0.27f, cdPaint);
+
+        fitText(valuePaint, name, maxW, nameSize);
+        c.drawText(name, cx - valuePaint.measureText(name) / 2f, h * 0.60f, valuePaint);
+
+        if (!time.isEmpty()) {
+            timePaint.setColor(timeColor);
+            fitText(timePaint, time, maxW, timeSize);
+            c.drawText(time, cx - timePaint.measureText(time) / 2f, h * 0.91f, timePaint);
         }
     }
 
@@ -493,7 +496,7 @@ public class DockView extends View {
         float xWeather  = prayerW + iconZoneW;
         float xClock    = xWeather + weatherW;
         float xDrawer   = xClock + clockW;
-        float iconPx    = ICON_SIZE * rawDp;
+        float iconPx    = iconPx(getHeight());
         int   n         = items.size();
         float gap       = n > 0 ? (iconZoneW - n * iconPx) / (n + 1f) : 0;
         float x         = ev.getX();

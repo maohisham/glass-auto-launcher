@@ -281,7 +281,7 @@ public class CarActivity extends Activity {
         if (wm == null) wm = (WindowManager) getSystemService(WINDOW_SERVICE);
 
         float density = getResources().getDisplayMetrics().density;
-        int dockH  = Math.round(96 * density);
+        int dockH  = Math.round(64 * density);
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int screenH = getResources().getDisplayMetrics().heightPixels;
 
@@ -605,7 +605,24 @@ public class CarActivity extends Activity {
                 });
     }
 
-    private final Runnable relaunchPanelsRunnable = this::launchFreeformPanels;
+    private final Runnable relaunchPanelsRunnable = this::applyLayoutLive;
+
+    /**
+     * Android only applies launch bounds to a new task, so open panel apps are force-stopped
+     * (through the accessibility service) and then reopened at the new bounds.
+     */
+    private void applyLayoutLive() {
+        PanelWatchService svc = PanelWatchService.instance;
+        java.util.Set<String> pkgs = watchedPackages();
+        if (svc == null || pkgs.isEmpty()) { launchFreeformPanels(); return; }
+        if (svc.isStopping()) return;
+        android.widget.Toast.makeText(this, "Applying new layout…", android.widget.Toast.LENGTH_SHORT).show();
+        lastOwnLaunchMs = android.os.SystemClock.uptimeMillis();
+        svc.forceStopAll(pkgs, () -> {
+            layoutPending = false;
+            launchFreeformPanels();
+        });
+    }
 
     private void launchFreeformPanels() {
         lastLaunchedPanelCount = cfg.panelCount;
@@ -669,9 +686,6 @@ public class CarActivity extends Activity {
         splitRatioState = closestPresetIdx(cfg.splitRatio);
         Config.save(this, cfg);
         layoutPending = true;
-        android.widget.Toast.makeText(this,
-                "Sides swapped. Close and reopen the map and media apps to apply.",
-                android.widget.Toast.LENGTH_LONG).show();
         handler.removeCallbacks(relaunchPanelsRunnable);
         handler.postDelayed(relaunchPanelsRunnable, 150);
     }
@@ -709,12 +723,37 @@ public class CarActivity extends Activity {
             String me = new ComponentName(this, PanelWatchService.class).flattenToString();
             String cur = Settings.Secure.getString(getContentResolver(),
                     Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-            if (cur != null && cur.contains(me)) return;
-            Settings.Secure.putString(getContentResolver(),
-                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-                    (cur == null || cur.isEmpty()) ? me : cur + ":" + me);
-            Settings.Secure.putInt(getContentResolver(), Settings.Secure.ACCESSIBILITY_ENABLED, 1);
+            if (cur == null || !cur.contains(me)) {
+                Settings.Secure.putString(getContentResolver(),
+                        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                        (cur == null || cur.isEmpty()) ? me : cur + ":" + me);
+                Settings.Secure.putInt(getContentResolver(), Settings.Secure.ACCESSIBILITY_ENABLED, 1);
+            }
+            // Listed as enabled but not running (e.g. after an app update or force-stop): toggle it so Android rebinds it.
+            handler.postDelayed(() -> rebindPanelWatchIfIdle(me), 3000);
         } catch (SecurityException ignored) { } // needs WRITE_SECURE_SETTINGS
+    }
+
+    private void rebindPanelWatchIfIdle(String me) {
+        if (PanelWatchService.instance != null) return;
+        try {
+            String now = Settings.Secure.getString(getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (now == null || !now.contains(me)) return;
+            String without = now.replace(":" + me, "").replace(me + ":", "").replace(me, "");
+            Settings.Secure.putString(getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, without);
+            handler.postDelayed(() -> {
+                try {
+                    String c2 = Settings.Secure.getString(getContentResolver(),
+                            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+                    if (c2 != null && c2.contains(me)) return;
+                    Settings.Secure.putString(getContentResolver(),
+                            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                            (c2 == null || c2.isEmpty()) ? me : c2 + ":" + me);
+                } catch (SecurityException ignored) { }
+            }, 600);
+        } catch (SecurityException ignored) { }
     }
 
     private void launchPanel1() {
