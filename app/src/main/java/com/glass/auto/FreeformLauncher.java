@@ -11,6 +11,7 @@ import android.graphics.Rect;
 import android.net.Uri;
 import android.util.Log;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -32,6 +33,11 @@ public class FreeformLauncher {
 
     /** Launches the given package into freeform bounds. Returns true if the launch was attempted. */
     public static boolean launch(Activity host, String packageName, Rect bounds) {
+        return launch(host, packageName, bounds, false);
+    }
+
+    /** With reset=true the app's existing task is cleared, because Android ignores new bounds for a task that already exists. */
+    public static boolean launch(Activity host, String packageName, Rect bounds, boolean reset) {
         if (packageName == null || packageName.isEmpty()) return false;
         try {
             Intent intent = host.getPackageManager()
@@ -41,11 +47,12 @@ public class FreeformLauncher {
                 return false;
             }
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                    | Intent.FLAG_ACTIVITY_MULTIPLE_TASK
-                    | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+                    | Intent.FLAG_ACTIVITY_NO_ANIMATION
+                    | (reset ? Intent.FLAG_ACTIVITY_CLEAR_TASK : Intent.FLAG_ACTIVITY_MULTIPLE_TASK));
 
             ActivityOptions opts = ActivityOptions.makeBasic();
             opts.setLaunchBounds(bounds);
+            setFreeformMode(opts); // Required on Android 12+ to honour setLaunchBounds
 
             host.startActivity(intent, opts.toBundle());
             Log.d(TAG, "Launched " + packageName + " at " + bounds);
@@ -58,24 +65,29 @@ public class FreeformLauncher {
 
     /** Launches a map app with a geo intent so it opens in navigation mode. */
     public static boolean launchMap(Activity host, String packageName, Rect bounds) {
+        return launchMap(host, packageName, bounds, false);
+    }
+
+    public static boolean launchMap(Activity host, String packageName, Rect bounds, boolean reset) {
         if (packageName == null || packageName.isEmpty()) return false;
         try {
             // Try geo intent first (opens navigation/map view directly)
             Intent geoIntent = new Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q="));
             geoIntent.setPackage(packageName);
             geoIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                    | Intent.FLAG_ACTIVITY_MULTIPLE_TASK
-                    | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+                    | Intent.FLAG_ACTIVITY_NO_ANIMATION
+                    | (reset ? Intent.FLAG_ACTIVITY_CLEAR_TASK : Intent.FLAG_ACTIVITY_MULTIPLE_TASK));
 
             ActivityOptions opts = ActivityOptions.makeBasic();
             opts.setLaunchBounds(bounds);
+            setFreeformMode(opts);
 
             if (geoIntent.resolveActivity(host.getPackageManager()) != null) {
                 host.startActivity(geoIntent, opts.toBundle());
                 return true;
             }
             // Fall back to normal launch intent
-            return launch(host, packageName, bounds);
+            return launch(host, packageName, bounds, reset);
         } catch (Exception e) {
             Log.e(TAG, "Map launch failed for " + packageName, e);
             return false;
@@ -160,6 +172,20 @@ public class FreeformLauncher {
 
         result.sort((a, b) -> a.label.compareToIgnoreCase(b.label));
         return result;
+    }
+
+    /**
+     * Calls ActivityOptions.setLaunchWindowingMode(WINDOWING_MODE_FREEFORM=5) via reflection.
+     * This is a @hide API but is present on all Android 8+ devices. Without it, Android 12+
+     * ignores setLaunchBounds() and launches the activity as fullscreen instead.
+     */
+    private static void setFreeformMode(ActivityOptions opts) {
+        try {
+            Method m = ActivityOptions.class.getMethod("setLaunchWindowingMode", int.class);
+            m.invoke(opts, 5); // 5 = WindowConfiguration.WINDOWING_MODE_FREEFORM
+        } catch (Exception e) {
+            Log.w(TAG, "setLaunchWindowingMode unavailable: " + e.getMessage());
+        }
     }
 
     public static class AppInfo {

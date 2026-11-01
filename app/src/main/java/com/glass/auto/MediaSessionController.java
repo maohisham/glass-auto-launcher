@@ -99,6 +99,10 @@ public class MediaSessionController {
         return ps != null && ps.getState() == PlaybackState.STATE_PLAYING;
     }
 
+    public void play() {
+        if (active != null) active.getTransportControls().play();
+    }
+
     public void togglePlayPause() {
         if (active == null) return;
         MediaController.TransportControls tc = active.getTransportControls();
@@ -117,12 +121,21 @@ public class MediaSessionController {
         if (active != null) active.getTransportControls().seekTo(posMs);
     }
 
-    public void stop() {
+    /** Sends a STOP transport command to the active session (tells the app to stop playback). */
+    public void stopPlayback() {
+        if (active != null) active.getTransportControls().stop();
+    }
+
+    /** Detaches from the active session without sending a transport command. */
+    public void detach() {
         if (active != null) {
             active.unregisterCallback(callback);
             active = null;
         }
     }
+
+    /** @deprecated Use detach() or stopPlayback() explicitly. */
+    public void stop() { detach(); }
 
     private void notifyPlayback(long duration) {
         if (listener == null || active == null) return;

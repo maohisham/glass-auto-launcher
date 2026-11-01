@@ -8,7 +8,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/black"
-    android:fitsSystemWindows="true">
+    android:fitsSystemWindows="false">
 
     <!-- Wallpaper / ambient background (blurred, dimmed) -->
     <ImageView
@@ -18,7 +18,8 @@
         android:scaleType="centerCrop"
         android:alpha="0" />
 
-    <!-- Status bar: time, speed, icons -->
+    <!-- Status bar: rendered as TYPE_APPLICATION_OVERLAY (see CarActivity.setupStatusBarOverlay).
+         Kept invisible here so the SplitPanelLayout's marginTop=48dp stays correct. -->
     <LinearLayout
         android:id="@+id/status_bar"
         android:layout_width="match_parent"
@@ -27,6 +28,7 @@
         android:gravity="center_vertical"
         android:paddingStart="16dp"
         android:paddingEnd="16dp"
+        android:visibility="invisible"
         android:background="#88000000">
 
         <TextView
@@ -57,7 +59,24 @@
             android:layout_marginStart="4dp"
             android:text="km/h" />
 
-        <!-- Resize panels button: hides freeform apps so the divider becomes visible/draggable -->
+        <!-- Eco score: score + emoji, tap for breakdown popup -->
+        <TextView
+            android:id="@+id/eco_score"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:text="-- 🌿"
+            android:textColor="#AAFFFFFF"
+            android:textSize="14sp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <!-- Resize panels button: cycles split presets (70/30 → 50/50 → 30/70) -->
         <TextView
             android:id="@+id/btn_resize"
             android:layout_width="wrap_content"
@@ -70,6 +89,19 @@
             android:paddingEnd="8dp"
             android:paddingTop="4dp"
             android:paddingBottom="4dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <!-- Gemini / voice assistant button -->
+        <ImageView
+            android:id="@+id/btn_gemini"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:layout_marginStart="4dp"
+            android:src="@android:drawable/ic_btn_speak_now"
+            android:tint="#CCFFFFFF"
+            android:padding="6dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:clickable="true"
             android:focusable="true" />

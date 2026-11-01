@@ -23,11 +23,13 @@ public class Config {
     public int    panelCount  = 2;          // 1, 2, or 3
     public String mapPackage  = "";         // package name of preferred map app (panel 1)
     public String panel3Package = "";       // package name for panel 3 (3-panel mode)
-    public float  splitRatio  = 0.55f;     // panel1 fraction of total width
+    public float  splitRatio  = 0.70f;     // panel1 fraction of total width
     public float  splitRatio2 = 0.50f;     // panel2 fraction of remaining width (3-panel)
+    public boolean swapPanels = false;      // true = map on the right panel, media on the left
 
     // Media
     public String mediaPackage = "";        // preferred media app package (empty = auto-detect active session)
+    public boolean autoStartMedia = true;   // auto-launch media app on launcher start
     public boolean showLyrics = true;
 
     // Dock
@@ -38,6 +40,7 @@ public class Config {
     // Speed
     public boolean showSpeed = true;
     public String speedUnit = "kmh";        // "kmh" | "mph"
+    public int speedLimitKmh = 0;           // 0 = disabled; alert beeps when exceeded
 
     // Appearance
     public boolean reducedMotion = false;
@@ -52,12 +55,15 @@ public class Config {
             j.put("panel3_package", c.panel3Package);
             j.put("split_ratio",    c.splitRatio);
             j.put("split_ratio2",   c.splitRatio2);
-            j.put("media_package",  c.mediaPackage);
-            j.put("show_lyrics",    c.showLyrics);
+            j.put("swap_panels",    c.swapPanels);
+            j.put("media_package",    c.mediaPackage);
+            j.put("auto_start_media", c.autoStartMedia);
+            j.put("show_lyrics",      c.showLyrics);
             j.put("dock_position",  c.dockPosition);
             j.put("dock_auto_hide", c.dockAutoHide);
-            j.put("show_speed",     c.showSpeed);
-            j.put("speed_unit",     c.speedUnit);
+            j.put("show_speed",       c.showSpeed);
+            j.put("speed_unit",       c.speedUnit);
+            j.put("speed_limit_kmh",  c.speedLimitKmh);
             j.put("reduced_motion", c.reducedMotion);
             j.put("dark_status_bar",c.darkStatusBar);
             j.put("ui_scale",       c.uiScale);
@@ -90,14 +96,17 @@ public class Config {
             c.panelCount    = j.optInt("panel_count", 2);
             c.mapPackage    = j.optString("map_package", "");
             c.panel3Package = j.optString("panel3_package", "");
-            c.splitRatio    = (float) j.optDouble("split_ratio", 0.55);
+            c.splitRatio    = (float) j.optDouble("split_ratio", 0.70);
             c.splitRatio2   = (float) j.optDouble("split_ratio2", 0.50);
-            c.mediaPackage  = j.optString("media_package", "");
-            c.showLyrics    = j.optBoolean("show_lyrics", true);
+            c.swapPanels    = j.optBoolean("swap_panels", false);
+            c.mediaPackage    = j.optString("media_package", "");
+            c.autoStartMedia  = j.optBoolean("auto_start_media", true);
+            c.showLyrics      = j.optBoolean("show_lyrics", true);
             c.dockPosition  = j.optString("dock_position", "bottom");
             c.dockAutoHide  = j.optBoolean("dock_auto_hide", false);
-            c.showSpeed     = j.optBoolean("show_speed", true);
-            c.speedUnit     = j.optString("speed_unit", "kmh");
+            c.showSpeed      = j.optBoolean("show_speed", true);
+            c.speedUnit      = j.optString("speed_unit", "kmh");
+            c.speedLimitKmh  = j.optInt("speed_limit_kmh", 0);
             c.reducedMotion = j.optBoolean("reduced_motion", false);
             c.darkStatusBar = j.optBoolean("dark_status_bar", true);
             c.uiScale       = (float) j.optDouble("ui_scale", 0.0);

@@ -19,7 +19,7 @@ import java.util.List;
 /**
  * Full-width glass dock drawn entirely in Canvas for performance.
  *
- * Layout (left → right): [Prayer (270dp)] | [Icons (flex)] | [Weather (110dp)] | [Clock (130dp)]
+ * Layout (left → right): [Prayer (270dp)] | [Icons (flex)] | [Weather (110dp)] | [Clock (130dp)] | [Drawer (50dp)]
  *
  * All data is pushed in via setters. onDraw() does zero allocation — all strings
  * and computations are pre-cached in the setters or in updatePaintSizes().
@@ -31,6 +31,7 @@ public class DockView extends View {
         void onWeatherTap();
         void onPrayerTap();
     }
+    public interface OnAppDrawerTapListener { void onAppDrawerTap(); }
 
     // --- Paints (all allocated once, sized in updatePaintSizes()) ---
     private final Paint bgPaint         = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -46,6 +47,15 @@ public class DockView extends View {
     private final Paint infoPaint       = new Paint(Paint.ANTI_ALIAS_FLAG); // 10dp — prayer info line
     private final Paint cityPaint       = new Paint(Paint.ANTI_ALIAS_FLAG); // 13dp — weather city
     private final Paint cdPaint         = new Paint(Paint.ANTI_ALIAS_FLAG); // 10dp — countdown
+    private final Paint dotPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint timePaint   = new Paint(Paint.ANTI_ALIAS_FLAG); // prayer time
+    private final Paint countPaint  = new Paint(Paint.ANTI_ALIAS_FLAG); // countdown
+    private final Paint pillFill    = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pillStroke  = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final int COL_TAG   = 0xFFFFC857; // gold
+    private static final int COL_TIME  = 0xFF5CE1E6; // cyan
+    private static final int COL_COUNT = 0xFF5CF29A; // green
+    private static final int COL_INFO  = 0xFF8FE9D8; // light teal
     private final RectF selRect    = new RectF();
     private final Rect  textBounds = new Rect();
 
@@ -80,11 +90,13 @@ public class DockView extends View {
     private int selectedIndex    = -1;
     private LaunchListener        launchListener;
     private OnSectionTapListener  sectionTapListener;
+    private OnAppDrawerTapListener drawerTapListener;
 
     // Section widths in dp
     private static final float CLOCK_W    = 130f;
     private static final float WEATHER_W  = 110f;
-    private static final float PRAYER_W   = 270f;
+    private static final float PRAYER_W   = 310f;
+    private static final float DRAWER_W   = 50f;
     private static final int   MAX_ICONS  = 6;
     private static final float ICON_SIZE  = 40f;
     private static final float SEL_RADIUS = 8f;
@@ -111,19 +123,32 @@ public class DockView extends View {
         datePaint.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
 
         valuePaint.setColor(0xFFFFFFFF);
-        valuePaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        valuePaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+
+        timePaint.setColor(COL_TIME);
+        timePaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        countPaint.setColor(COL_COUNT);
+        countPaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        pillFill.setColor(0x3352E08A);
+        pillFill.setStyle(Paint.Style.FILL);
+        pillStroke.setColor(COL_COUNT);
+        pillStroke.setStyle(Paint.Style.STROKE);
+        pillStroke.setStrokeWidth(1.5f * rawDp);
 
         valuePaintLarge.setColor(0xFFFFFFFF);
         valuePaintLarge.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
 
-        labelPaint.setColor(0x88FFFFFF);
+        labelPaint.setColor(0xFFFFFFFF);
 
-        dimPaint.setColor(0x66FFFFFF);
-        dimPaintArrow.setColor(0x66FFFFFF);
+        dimPaint.setColor(0xFFFFFFFF);
+        dimPaintArrow.setColor(0xFFFFFFFF);
 
         infoPaint.setColor(0xFFFFFFFF);
-        cityPaint.setColor(0x88FFFFFF);
-        cdPaint.setColor(0xAAFFFFFF);
+        cityPaint.setColor(0xFFFFFFFF);
+        cdPaint.setColor(0xFFFFFFFF);
+
+        dotPaint.setColor(0xFFFFFFFF);
+        dotPaint.setStyle(Paint.Style.FILL);
 
         updatePaintSizes();
         setWillNotDraw(false);
@@ -249,6 +274,7 @@ public class DockView extends View {
 
     public void setLaunchListener(LaunchListener l) { launchListener = l; }
     public void setOnSectionTapListener(OnSectionTapListener l) { sectionTapListener = l; }
+    public void setOnAppDrawerTapListener(OnAppDrawerTapListener l) { drawerTapListener = l; }
 
     // --- Drawing (zero allocations) ---
 
@@ -258,24 +284,28 @@ public class DockView extends View {
         int h = getHeight();
         float cy = h / 2f;
 
+        float drawerW  = DRAWER_W  * dp;
         float prayerW  = PRAYER_W  * dp;
         float weatherW = WEATHER_W * dp;
         float clockW   = CLOCK_W   * dp;
-        float iconW    = w - prayerW - weatherW - clockW;
+        float iconW    = w - prayerW - weatherW - clockW - drawerW;
 
         float xIcons   = prayerW;
         float xWeather = xIcons + iconW;
         float xClock   = xWeather + weatherW;
+        float xDrawer  = xClock + clockW;
 
         canvas.drawLine(0, 1f, w, 1f, rimPaint);
         canvas.drawLine(xIcons,   8 * dp, xIcons,   h - 8 * dp, rimPaint);
         canvas.drawLine(xWeather, 8 * dp, xWeather, h - 8 * dp, rimPaint);
         canvas.drawLine(xClock,   8 * dp, xClock,   h - 8 * dp, rimPaint);
+        canvas.drawLine(xDrawer,  8 * dp, xDrawer,  h - 8 * dp, rimPaint);
 
         drawPrayer(canvas, 0, prayerW, cy, h);
         drawIcons(canvas, xIcons, iconW, cy);
         drawWeather(canvas, xWeather, weatherW, cy);
         drawClock(canvas, xClock, clockW, cy);
+        drawAppDrawer(canvas, xDrawer, drawerW, cy);
     }
 
     private void drawClock(Canvas c, float x, float w, float cy) {
@@ -311,6 +341,21 @@ public class DockView extends View {
         }
     }
 
+    private void drawAppDrawer(Canvas c, float x, float w, float cy) {
+        float dotR   = 2.5f * dp;
+        float dotGap = 4.5f * dp;
+        float step   = dotR * 2 + dotGap;
+        float gridW  = 3 * step - dotGap;
+        float gridH  = gridW;
+        float startX = x + (w - gridW) / 2f + dotR;
+        float startY = cy - gridH / 2f + dotR;
+        for (int row = 0; row < 3; row++) {
+            for (int col = 0; col < 3; col++) {
+                c.drawCircle(startX + col * step, startY + row * step, dotR, dotPaint);
+            }
+        }
+    }
+
     private void drawWeather(Canvas c, float x, float w, float cy) {
         float topShift = hasCity ? 8f * dp : 4f * dp;
         valuePaintLarge.getTextBounds(emojiTempStr, 0, emojiTempStr.length(), textBounds);
@@ -332,51 +377,75 @@ public class DockView extends View {
     }
 
     private void drawPrayer(Canvas c, float x, float w, float cy, float h) {
+        float pad = 10 * dp;
+
+        dimPaint.setTextSize(h * 0.14f);
         if (prayerCurrent.isEmpty() && prayerNext.isEmpty()) {
-            dimPaint.getTextBounds("Prayer loading…", 0, 14, textBounds);
-            c.drawText("Prayer loading…", x + 12 * dp, cy + 5 * dp, dimPaint);
+            c.drawText("Prayer loading…", x + pad, cy + 5 * dp, dimPaint);
             return;
         }
 
-        float infoOffset = hasInfo ? 10f * dp : 0f;
-
+        // Row 1: location · hijri date, centred, light teal
         if (hasInfo) {
-            // Truncate infoLineStr to fit; infoLineStr is already pre-built in the setter
-            String line = infoLineStr;
-            float maxW  = w - 8 * dp;
-            while (infoPaint.measureText(line) > maxW && line.length() > 4)
-                line = line.substring(0, line.length() - 1);
-            if (line.length() < infoLineStr.length()) line = line + "…";
-            infoPaint.getTextBounds(line, 0, line.length(), textBounds);
-            c.drawText(line, x + (w - textBounds.width()) / 2f,
-                    cy - infoOffset - 2 * dp, infoPaint);
+            infoPaint.setColor(COL_INFO);
+            fitText(infoPaint, infoLineStr, w - 2 * pad, h * 0.17f);
+            infoPaint.getTextBounds(infoLineStr, 0, infoLineStr.length(), textBounds);
+            c.drawText(infoLineStr, x + (w - textBounds.width()) / 2f, h * 0.18f, infoPaint);
         }
 
-        float colW     = w / 2f;
-        float prayerCy = cy + infoOffset / 2f;
+        // Left column (centred): next prayer name + time
+        float leftW = w * 0.56f - pad;
+        float lcx   = x + pad + leftW / 2f;
 
-        drawPrayerColumn(c, x, colW, prayerCy, prayerCurrent, currentTime12, true, null);
+        String name = prayerNext.isEmpty() ? "—" : prayerNext;
+        fitText(valuePaint, name, leftW, h * 0.31f);
+        valuePaint.getTextBounds(name, 0, name.length(), textBounds);
+        c.drawText(name, lcx - textBounds.width() / 2f, h * 0.55f, valuePaint);
 
-        // Arrow — uses dimPaintArrow (pre-sized at 20dp, never mutated)
-        c.drawText("›", x + colW - 8 * dp, prayerCy + 7 * dp, dimPaintArrow);
+        if (!nextTime12.isEmpty()) {
+            fitText(timePaint, nextTime12, leftW, h * 0.24f);
+            timePaint.getTextBounds(nextTime12, 0, nextTime12.length(), textBounds);
+            c.drawText(nextTime12, lcx - textBounds.width() / 2f, h * 0.80f, timePaint);
+        }
 
-        drawPrayerColumn(c, x + colW, colW - 8 * dp, prayerCy,
-                prayerNext, nextTime12, false, countdownStr);
+        // Right column: countdown pill
+        if (!countdownStr.isEmpty()) {
+            float px0 = x + w * 0.58f, px1 = x + w - pad;
+            float py0 = h * 0.27f,     py1 = h * 0.85f;
+            selRect.set(px0, py0, px1, py1);
+            c.drawRoundRect(selRect, 12 * dp, 12 * dp, pillFill);
+            c.drawRoundRect(selRect, 12 * dp, 12 * dp, pillStroke);
+
+            float pcx = (px0 + px1) / 2f;
+            cdPaint.setColor(COL_TAG);
+            fitText(cdPaint, "NEXT IN", px1 - px0 - 12 * dp, h * 0.125f);
+            cdPaint.getTextBounds("NEXT IN", 0, 7, textBounds);
+            c.drawText("NEXT IN", pcx - textBounds.width() / 2f, py0 + (py1 - py0) * 0.34f, cdPaint);
+
+            fitText(countPaint, countdownStr, px1 - px0 - 12 * dp, h * 0.29f);
+            countPaint.getTextBounds(countdownStr, 0, countdownStr.length(), textBounds);
+            c.drawText(countdownStr, pcx - textBounds.width() / 2f, py0 + (py1 - py0) * 0.86f, countPaint);
+        }
+
+        // Footer: "NOW  Isyak 7:30 PM"
+        if (!prayerCurrent.isEmpty()) {
+            String lead = "NOW  ";
+            String foot = prayerCurrent;
+            if (!currentTime12.isEmpty()) foot += "  " + currentTime12;
+            fitText(infoPaint, lead + foot, w - 2 * pad, h * 0.15f);
+            float fx = x + (w - infoPaint.measureText(lead + foot)) / 2f;
+            infoPaint.setColor(COL_TAG);
+            c.drawText(lead, fx, h * 0.97f, infoPaint);
+            infoPaint.setColor(0xFFFFFFFF);
+            c.drawText(foot, fx + infoPaint.measureText(lead), h * 0.97f, infoPaint);
+        }
     }
 
-    private void drawPrayerColumn(Canvas c, float x, float w, float cy,
-                                  String name, String time, boolean isCurrent, String cdText) {
-        labelPaint.getTextBounds(name, 0, name.length(), textBounds);
-        c.drawText(name, x + (w - textBounds.width()) / 2f, cy - 6 * dp, labelPaint);
-
-        Paint tp = isCurrent ? valuePaint : dimPaint;
-        tp.getTextBounds(time, 0, time.length(), textBounds);
-        c.drawText(time, x + (w - textBounds.width()) / 2f, cy + 14 * dp, tp);
-
-        if (cdText != null && !cdText.isEmpty()) {
-            cdPaint.getTextBounds(cdText, 0, cdText.length(), textBounds);
-            c.drawText(cdText, x + (w - textBounds.width()) / 2f, cy + 26 * dp, cdPaint);
-        }
+    /** Sets the paint to {@code size}, shrinking it so {@code s} fits in {@code maxW}. */
+    private static void fitText(Paint p, String s, float maxW, float size) {
+        p.setTextSize(size);
+        float mw = p.measureText(s);
+        if (mw > maxW && mw > 0) p.setTextSize(size * maxW / mw);
     }
 
     // --- Helpers (static, no allocation) ---
@@ -394,7 +463,7 @@ public class DockView extends View {
                     - (now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE));
             if (diff <= 0) diff += 24 * 60;
             int h = diff / 60, m = diff % 60;
-            return h > 0 ? "in " + h + "h " + m + "m" : "in " + m + "m";
+            return h > 0 ? h + "h " + m + "m" : m + "m";
         } catch (Exception e) { return ""; }
     }
 
@@ -416,12 +485,14 @@ public class DockView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent ev) {
+        float drawerW   = DRAWER_W  * dp;
         float prayerW   = PRAYER_W  * dp;
         float weatherW  = WEATHER_W * dp;
         float clockW    = CLOCK_W   * dp;
-        float iconZoneW = getWidth() - prayerW - weatherW - clockW;
+        float iconZoneW = getWidth() - prayerW - weatherW - clockW - drawerW;
         float xWeather  = prayerW + iconZoneW;
         float xClock    = xWeather + weatherW;
+        float xDrawer   = xClock + clockW;
         float iconPx    = ICON_SIZE * rawDp;
         int   n         = items.size();
         float gap       = n > 0 ? (iconZoneW - n * iconPx) / (n + 1f) : 0;
@@ -429,6 +500,7 @@ public class DockView extends View {
 
         boolean inPrayer  = x < prayerW;
         boolean inWeather = x >= xWeather && x < xClock;
+        boolean inDrawer  = x >= xDrawer;
 
         int tapped = -1;
         for (int i = 0; i < n; i++) {
@@ -448,6 +520,8 @@ public class DockView extends View {
                     sectionTapListener.onPrayerTap();
                 } else if (inWeather && sectionTapListener != null) {
                     sectionTapListener.onWeatherTap();
+                } else if (inDrawer && drawerTapListener != null) {
+                    drawerTapListener.onAppDrawerTap();
                 }
                 selectedIndex = -1;
                 invalidate();

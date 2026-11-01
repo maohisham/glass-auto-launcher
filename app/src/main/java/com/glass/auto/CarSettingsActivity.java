@@ -23,6 +23,13 @@ import java.util.List;
 /** Minimal settings screen: select map app, media app, dock apps, speed unit, lyrics toggle. */
 public class CarSettingsActivity extends Activity {
 
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        CarActivity car = CarActivity.instance;
+        if (car != null) car.onSettingsClosed();
+    }
+
     private Config cfg;
     private List<FreeformLauncher.AppInfo> mapApps;
     private List<FreeformLauncher.AppInfo> mediaApps;
@@ -59,6 +66,9 @@ public class CarSettingsActivity extends Activity {
         addSection(root, "Media App (empty = auto-detect)");
         addAppSpinner(root, mediaApps, cfg.mediaPackage, pkg -> cfg.mediaPackage = pkg);
 
+        addSection(root, "Auto-Start Media on Launch");
+        addSwitch(root, cfg.autoStartMedia, on -> cfg.autoStartMedia = on);
+
         addSection(root, "Speed Unit");
         addSpinner(root,
                 new String[]{"km/h", "mph"},
@@ -67,6 +77,16 @@ public class CarSettingsActivity extends Activity {
 
         addSection(root, "Show Speed");
         addSwitch(root, cfg.showSpeed, on -> cfg.showSpeed = on);
+
+        addSection(root, "Speed Alert Limit");
+        int[] limitValues = {0, 60, 70, 80, 90, 100, 110, 120, 130, 140};
+        String[] limitLabels = {"Disabled", "60 km/h", "70 km/h", "80 km/h",
+                "90 km/h", "100 km/h", "110 km/h", "120 km/h", "130 km/h", "140 km/h"};
+        int limitSel = 0;
+        for (int i = 1; i < limitValues.length; i++) {
+            if (limitValues[i] == cfg.speedLimitKmh) { limitSel = i; break; }
+        }
+        addSpinner(root, limitLabels, limitSel, idx -> cfg.speedLimitKmh = limitValues[idx]);
 
         addSection(root, "Show Lyrics");
         addSwitch(root, cfg.showLyrics, on -> cfg.showLyrics = on);
@@ -85,6 +105,9 @@ public class CarSettingsActivity extends Activity {
 
         addSection(root, "Dock Apps (tap to toggle)");
         addDockAppsPicker(root, allApps);
+
+        addSection(root, "Freeform Window Support");
+        addFreeformButton(root);
 
         Button save = new Button(this);
         save.setText("Save & Close");
@@ -148,6 +171,46 @@ public class CarSettingsActivity extends Activity {
         sw.setChecked(initial);
         sw.setOnCheckedChangeListener((v, on) -> cb.onSelected(on));
         parent.addView(sw);
+    }
+
+    private void addFreeformButton(ViewGroup parent) {
+        int freeform = 0;
+        try {
+            freeform = android.provider.Settings.Global.getInt(
+                    getContentResolver(), "enable_freeform_support", 0);
+        } catch (Exception ignored) { }
+
+        TextView status = new TextView(this);
+        status.setTextSize(13f);
+        status.setPadding(0, 4, 0, 8);
+        boolean enabled = freeform == 1;
+        status.setText(enabled ? "✅ Freeform windows are ENABLED" : "⚠️ Freeform windows are DISABLED — panels will appear blank");
+        status.setTextColor(enabled ? 0xFF80E080 : 0xFFFFAA44);
+        parent.addView(status);
+
+        if (!enabled) {
+            Button btn = new Button(this);
+            btn.setText("Enable Freeform Windows");
+            btn.setOnClickListener(v -> {
+                try {
+                    android.provider.Settings.Global.putInt(
+                            getContentResolver(), "enable_freeform_support", 1);
+                    android.provider.Settings.Global.putInt(
+                            getContentResolver(), "force_resizable_activities", 1);
+                    status.setText("✅ Freeform windows ENABLED — please restart the app");
+                    status.setTextColor(0xFF80E080);
+                    btn.setEnabled(false);
+                    android.widget.Toast.makeText(this,
+                            "Done! Close and reopen Glass Auto for changes to take effect.",
+                            android.widget.Toast.LENGTH_LONG).show();
+                } catch (SecurityException e) {
+                    android.widget.Toast.makeText(this,
+                            "Permission denied. Run via ADB:\nadb shell pm grant com.glass.auto android.permission.WRITE_SECURE_SETTINGS",
+                            android.widget.Toast.LENGTH_LONG).show();
+                }
+            });
+            parent.addView(btn);
+        }
     }
 
     private void saveConfig() {

@@ -9,4 +9,5 @@
     <string name="no_lyrics">No lyrics available</string>
     <string name="speed_unit_kmh">km/h</string>
     <string name="speed_unit_mph">mph</string>
+    <string name="panel_watch_desc">Keeps the map and media panels inside the area between the status bar and the dock. Only reads window positions.</string>
 </resources>

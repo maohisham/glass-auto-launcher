@@ -80,6 +80,20 @@ public class SplitPanelLayout extends ViewGroup {
     public float getRatio1() { return ratio1; }
     public float getRatio2() { return ratio2; }
 
+    /** Moves divider 1 or 2 by dxPx from the ratio it had when the drag started. */
+    public void applyDrag(int dividerIndex, float startRatio, float dxPx) {
+        int usable = getWidth() - dividerW * (mode == MODE_TRIPLE ? 2 : 1);
+        if (usable <= 0) return;
+        if (dividerIndex == 1) {
+            ratio1 = clamp(startRatio + dxPx / usable);
+        } else {
+            float remaining = usable - (int) (ratio1 * usable);
+            if (remaining <= 0) return;
+            ratio2 = clamp(startRatio + dxPx / remaining);
+        }
+        requestLayout();
+    }
+
     public void setOnRatioChangedListener(OnRatioChangedListener l) { listener = l; }
     public void setOnDragStartListener(OnDragStartListener l) { dragStartListener = l; }
 
