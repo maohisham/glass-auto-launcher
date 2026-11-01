@@ -9,6 +9,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Rect;
 import android.net.Uri;
+import android.os.Bundle;
 import android.util.Log;
 
 import java.lang.reflect.Method;
@@ -52,13 +53,34 @@ public class FreeformLauncher {
 
             ActivityOptions opts = ActivityOptions.makeBasic();
             opts.setLaunchBounds(bounds);
-            setFreeformMode(opts); // Required on Android 12+ to honour setLaunchBounds
 
-            host.startActivity(intent, opts.toBundle());
+            host.startActivity(intent, freeformOptions(opts)); // freeform mode is required on Android 12+ to honour the bounds
             Log.d(TAG, "Launched " + packageName + " at " + bounds);
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Freeform launch failed for " + packageName, e);
+            return false;
+        }
+    }
+
+    /**
+     * Android split screen. {@code adjacent=false} opens the app fullscreen in a fresh task (it is then
+     * docked by the accessibility "toggle split screen" action); {@code adjacent=true} opens the app
+     * in the other half of an active split.
+     */
+    public static boolean launchSplit(Activity host, String packageName, boolean adjacent) {
+        if (packageName == null || packageName.isEmpty()) return false;
+        try {
+            Intent intent = host.getPackageManager().getLaunchIntentForPackage(packageName);
+            if (intent == null) return false;
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION
+                    | (adjacent ? Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                                : Intent.FLAG_ACTIVITY_CLEAR_TASK));
+            host.startActivity(intent);
+            Log.d(TAG, "Split launch " + packageName + " adjacent=" + adjacent);
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "Split launch failed for " + packageName, e);
             return false;
         }
     }
@@ -80,10 +102,9 @@ public class FreeformLauncher {
 
             ActivityOptions opts = ActivityOptions.makeBasic();
             opts.setLaunchBounds(bounds);
-            setFreeformMode(opts);
 
             if (geoIntent.resolveActivity(host.getPackageManager()) != null) {
-                host.startActivity(geoIntent, opts.toBundle());
+                host.startActivity(geoIntent, freeformOptions(opts));
                 return true;
             }
             // Fall back to normal launch intent
@@ -179,12 +200,17 @@ public class FreeformLauncher {
      * This is a @hide API but is present on all Android 8+ devices. Without it, Android 12+
      * ignores setLaunchBounds() and launches the activity as fullscreen instead.
      */
-    private static void setFreeformMode(ActivityOptions opts) {
+    static Bundle freeformOptions(ActivityOptions opts) {
         try {
             Method m = ActivityOptions.class.getMethod("setLaunchWindowingMode", int.class);
             m.invoke(opts, 5); // 5 = WindowConfiguration.WINDOWING_MODE_FREEFORM
+            return opts.toBundle();
         } catch (Exception e) {
-            Log.w(TAG, "setLaunchWindowingMode unavailable: " + e.getMessage());
+            // Android 16 blocks the method above (HyperOS then opens the app fullscreen). The method
+            // only stores this value in the options bundle, so put it there directly.
+            Bundle b = opts.toBundle();
+            b.putInt("android.activity.windowingMode", 5);
+            return b;
         }
     }
 

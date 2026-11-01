@@ -98,8 +98,10 @@ public class CarActivity extends Activity {
     private boolean isPlaying = false;
 
     // Panel split ratio presets for 2-panel mode (fraction of total width for map panel)
-    private static final float[] SPLIT_PRESETS = {0.70f, 0.50f, 0.30f};
-    private int splitRatioState = 0; // index into SPLIT_PRESETS
+    /** Narrowest a panel may be, in dp: a phone-width layout still fits. Presets are derived from it and the screen width. */
+    private static final float MIN_PANEL_DP = 420f;
+    private final boolean[] presetOk = {true, true, true}; // presets the system actually honours (learned at runtime)
+    private int splitRatioState = 0; // index into splitPresets()
 
     // Overlays — float above freeform windows so Maps can't cover them
     private WindowManager wm;
@@ -174,6 +176,9 @@ public class CarActivity extends Activity {
         checkAndEnableFreeform();
         ensurePanelWatchEnabled();
         instance = this;
+        handler.post(this::applyBarGeometry);
+        handler.postDelayed(this::applyBarGeometry, 4000); // after the accessibility service has bound
+        handler.postDelayed(this::applyBarGeometry, 12000); // and after the split has opened and the bars have settled
         setupDock();
         setupSplitPanel();
         setupMediaControls();
@@ -260,6 +265,11 @@ public class CarActivity extends Activity {
         ecoScoreLabel.setOnClickListener(v -> showEcoPopup());
         statusBarOverlayView.findViewById(R.id.btn_resize)
                 .setOnClickListener(v -> cycleRatio());
+        statusBarOverlayView.findViewById(R.id.btn_dock_pos)
+                .setOnClickListener(v -> cycleDockPosition());
+        // Long press swaps the two sides (the system divider has no tap-to-swap).
+        statusBarOverlayView.findViewById(R.id.btn_resize)
+                .setOnLongClickListener(v -> { swapPanels(); return true; });
         statusBarOverlayView.findViewById(R.id.btn_gemini)
                 .setOnClickListener(v -> launchVoiceAssistant());
 
@@ -272,8 +282,167 @@ public class CarActivity extends Activity {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             return true;
         });
+        View.OnClickListener navClick = v -> {
+            PanelWatchService s = PanelWatchService.instance;
+            if (s != null) s.navAction(v.getId() == R.id.btn_nav_back ? 0
+                    : v.getId() == R.id.btn_nav_home ? 1 : 2);
+        };
+        statusBarOverlayView.findViewById(R.id.btn_nav_back).setOnClickListener(navClick);
+        statusBarOverlayView.findViewById(R.id.btn_nav_home).setOnClickListener(navClick);
+        statusBarOverlayView.findViewById(R.id.btn_nav_recents).setOnClickListener(navClick);
 
+        statusLp = lp;
         wm.addView(statusBarOverlayView, lp);
+    }
+
+    private WindowManager.LayoutParams statusLp, dockLp;
+    private int dockFitTypes;
+
+    private int dpPx(float v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+
+    /** {top, bottom, navTop, navBottom, left, right}: the system bars' real sizes, whether or not they are showing. */
+    private int[] systemBarInsets() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsets wi = getWindowManager().getCurrentWindowMetrics().getWindowInsets();
+            android.graphics.Insets all = wi.getInsetsIgnoringVisibility(android.view.WindowInsets.Type.systemBars());
+            android.graphics.Insets nav = wi.getInsetsIgnoringVisibility(android.view.WindowInsets.Type.navigationBars());
+            return new int[]{all.top, all.bottom, nav.top, nav.bottom, all.left, all.right};
+        }
+        int sb = 0, nb = 0;
+        int a = getResources().getIdentifier("status_bar_height", "dimen", "android");
+        int b = getResources().getIdentifier("navigation_bar_height", "dimen", "android");
+        if (a > 0) sb = getResources().getDimensionPixelSize(a);
+        if (b > 0) nb = getResources().getDimensionPixelSize(b);
+        return new int[]{sb, nb, 0, nb, 0, 0};
+    }
+    private static final String[] DOCK_POS_NAMES = {"bottom", "top", "left", "right"};
+    /** Order the status bar button steps through: bottom → left → top → right → bottom. */
+    private static final int[] DOCK_POS_NEXT = {DockView.POS_LEFT, DockView.POS_RIGHT, DockView.POS_TOP, DockView.POS_BOTTOM};
+    private String appliedDockName = "";
+    private boolean statusOnTop;
+
+    private int dockPosIndex() {
+        for (int i = 0; i < DOCK_POS_NAMES.length; i++)
+            if (DOCK_POS_NAMES[i].equals(cfg.dockPosition)) return i;
+        return DockView.POS_BOTTOM;
+    }
+
+    /**
+     * Places the status bar and the dock for the configured dock position, and sizes them.
+     * In split mode the apps fill the whole display, so a bottom dock is fitted to the strip the system
+     * already keeps clear (its navigation bar) and takes over that bar's buttons; the other positions
+     * overlay the apps' edge. Without the accessibility service there is no way to press Back/Home, so
+     * the system bars are left uncovered and the bars keep their normal size.
+     */
+    void applyBarGeometry() {
+        if (wm == null || statusBarOverlayView == null || dockOverlay == null
+                || statusLp == null || dockLp == null) return;
+        final int pos = dockPosIndex();
+        final boolean vertical = pos == DockView.POS_LEFT || pos == DockView.POS_RIGHT;
+        int statusH = dpPx(48), thick = vertical ? dpPx(92) : dpPx(64); // thick: dock height, or width when vertical
+        boolean coverBottom = false, navInDock = false, navInStatus = false, fit = false, compact = false;
+        if (isSplitMode() && PanelWatchService.instance != null) {
+            int[] in = systemBarInsets();
+            fit = true;
+            statusH = Math.max(in[0], dpPx(30));
+            navInStatus = in[2] >= dpPx(30);
+            if (vertical) {
+                thick = dpPx(92);
+            } else if (pos == DockView.POS_TOP) {
+                thick = dpPx(42); compact = true;
+            } else {
+                // A bar that the system draws above our overlays can't be hidden (and would block taps on a dock
+                // under it), so the dock then sits above it like it does where no bar is reserved.
+                boolean navAbove = PanelWatchService.instance.navBarAboveOverlays();
+                if (in[1] >= dpPx(36) && !navAbove) { thick = in[1]; coverBottom = true; navInDock = in[3] > 0; }
+                else { thick = dpPx(42); compact = true; }
+            }
+            if (cfg.compactDock && !vertical) { coverBottom = false; navInDock = false; thick = dpPx(42); compact = true; }
+        }
+        // Top, left and right docks reach under the status bar (which sits above them) so they can use the full edge.
+        final int topInset = pos == DockView.POS_BOTTOM ? 0 : statusH;
+        try {
+            statusLp.height = statusH;
+            wm.updateViewLayout(statusBarOverlayView, statusLp);
+
+            dockLp.gravity = pos == DockView.POS_BOTTOM ? (Gravity.BOTTOM | Gravity.START)
+                    : pos == DockView.POS_RIGHT ? (Gravity.TOP | Gravity.END) : (Gravity.TOP | Gravity.START);
+            dockLp.width  = vertical ? thick : WindowManager.LayoutParams.MATCH_PARENT;
+            dockLp.height = vertical ? WindowManager.LayoutParams.MATCH_PARENT
+                    : pos == DockView.POS_TOP ? statusH + thick : thick;
+            dockLp.x = 0;
+            dockLp.y = 0;
+            if (coverBottom) dockLp.flags |= WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+            else dockLp.flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+            // Overlays are laid out inside the system bars by default; extend under the navigation bar instead.
+            if (android.os.Build.VERSION.SDK_INT >= 30)
+                dockLp.setFitInsetsTypes(coverBottom ? 0 : dockFitTypes);
+            wm.updateViewLayout(dockOverlay, dockLp);
+
+            // The status bar must stay on top of the part of the dock that reaches under it.
+            if (pos != DockView.POS_BOTTOM && !statusOnTop) {
+                wm.removeView(statusBarOverlayView);
+                wm.addView(statusBarOverlayView, statusLp);
+                statusOnTop = true;
+            }
+        } catch (Exception e) { android.util.Log.w("GlassAuto", "applyBarGeometry failed", e); return; }
+        // Opaque while covering a system bar or sitting over the apps, otherwise their content shows through.
+        dockOverlay.setBackgroundColor(coverBottom || compact || (fit && vertical) ? 0xFF000000 : 0xCC000000);
+        statusBarOverlayView.setBackgroundColor(fit ? 0xFF000000 : 0xCC000000);
+        dockOverlay.setPosition(pos, topInset);
+        dockOverlay.setCompact(compact);
+        dockOverlay.setNavButtons(navInDock);
+        int vis = navInStatus ? View.VISIBLE : View.GONE;
+        statusBarOverlayView.findViewById(R.id.btn_nav_back).setVisibility(vis);
+        statusBarOverlayView.findViewById(R.id.btn_nav_home).setVisibility(vis);
+        statusBarOverlayView.findViewById(R.id.btn_nav_recents).setVisibility(vis);
+        ((DockPositionIcon) statusBarOverlayView.findViewById(R.id.btn_dock_pos)).setPosition(pos);
+        if (fit) fitStatusBar(statusH);
+        appliedDockName = DOCK_POS_NAMES[pos];
+    }
+
+    /** Steps the dock to the next edge (status bar button). */
+    private void cycleDockPosition() {
+        cfg.dockPosition = DOCK_POS_NAMES[DOCK_POS_NEXT[dockPosIndex()]];
+        Config.save(this, cfg);
+        applyBarGeometry();
+        relayoutPanelsForDock();
+    }
+
+    /** Freeform panels have to move out from under the dock; native split screen needs nothing. */
+    private void relayoutPanelsForDock() {
+        if (isSplitMode()) return;
+        layoutPending = true;
+        handler.removeCallbacks(relaunchPanelsRunnable);
+        handler.postDelayed(() -> {
+            syncPanelInsets();
+            positionResizeHandles();
+            handler.postDelayed(relaunchPanelsRunnable, 400); // after the new margins have laid out
+        }, 450);
+    }
+
+    /** Scales the status bar's contents to a bar height other than the 48dp it was designed for. */
+    private void fitStatusBar(int h) {
+        View v = statusBarOverlayView;
+        ((TextView) v.findViewById(R.id.speed_label)).setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, h * 0.52f);
+        ((TextView) v.findViewById(R.id.speed_unit)).setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, h * 0.30f);
+        ((TextView) v.findViewById(R.id.eco_score)).setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, h * 0.36f);
+        ((TextView) v.findViewById(R.id.btn_resize)).setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, h * 0.48f);
+        for (int id : new int[]{R.id.btn_nav_back, R.id.btn_nav_home, R.id.btn_nav_recents})
+            ((TextView) v.findViewById(id)).setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, h * 0.46f);
+        View posBtn = v.findViewById(R.id.btn_dock_pos);
+        android.view.ViewGroup.LayoutParams posLp = posBtn.getLayoutParams();
+        posLp.width = Math.round(h * 1.05f);
+        posLp.height = Math.round(h * 0.8f);
+        posBtn.setLayoutParams(posLp);
+        for (int id : new int[]{R.id.btn_gemini, R.id.btn_settings}) {
+            View b = v.findViewById(id);
+            android.view.ViewGroup.LayoutParams lp = b.getLayoutParams();
+            lp.width = lp.height = Math.round(h * 0.82f);
+            b.setLayoutParams(lp);
+            int pad = Math.round(h * 0.14f);
+            b.setPadding(pad, pad, pad, pad);
+        }
     }
 
     private void setupDockOverlay() {
@@ -299,6 +468,12 @@ public class CarActivity extends Activity {
 
         dockOverlay = new DockView(this, null);
         dockOverlay.setBackgroundColor(0xCC000000);
+        dockLp = lp;
+        if (android.os.Build.VERSION.SDK_INT >= 30) dockFitTypes = lp.getFitInsetsTypes();
+        dockOverlay.setOnNavTapListener(which -> {
+            PanelWatchService s = PanelWatchService.instance;
+            if (s != null) s.navAction(which);
+        });
         wm.addView(dockOverlay, lp);
 
         // The in-layout dock would show through the translucent overlay with stale text.
@@ -323,8 +498,8 @@ public class CarActivity extends Activity {
         root.getLocationOnScreen(r);
         android.widget.FrameLayout.LayoutParams lp =
                 (android.widget.FrameLayout.LayoutParams) splitPanel.getLayoutParams();
-        return new Rect(r[0], r[1] + lp.topMargin,
-                r[0] + root.getWidth(), r[1] + root.getHeight() - lp.bottomMargin);
+        return new Rect(r[0] + lp.leftMargin, r[1] + lp.topMargin,
+                r[0] + root.getWidth() - lp.rightMargin, r[1] + root.getHeight() - lp.bottomMargin);
     }
 
     /**
@@ -337,7 +512,7 @@ public class CarActivity extends Activity {
         root.getLocationOnScreen(r);
         android.widget.FrameLayout.LayoutParams lp =
                 (android.widget.FrameLayout.LayoutParams) splitPanel.getLayoutParams();
-        int top = lp.topMargin, bottom = lp.bottomMargin;
+        int top = lp.topMargin, bottom = lp.bottomMargin, left = lp.leftMargin, right = lp.rightMargin;
         if (statusBarOverlayView != null && statusBarOverlayView.getHeight() > 0) {
             int[] s = new int[2];
             statusBarOverlayView.getLocationOnScreen(s);
@@ -346,11 +521,30 @@ public class CarActivity extends Activity {
         if (dockOverlay != null && dockOverlay.getHeight() > 0) {
             int[] d = new int[2];
             dockOverlay.getLocationOnScreen(d);
-            bottom = Math.max(0, r[1] + root.getHeight() - d[1]);
+            int dockBottom = d[1] + dockOverlay.getHeight();
+            left = 0; right = 0; bottom = 0;
+            switch (dockPosIndex()) {
+                case DockView.POS_TOP:
+                    top = Math.max(top, dockBottom - r[1]);
+                    break;
+                case DockView.POS_LEFT:
+                    left = Math.max(0, d[0] + dockOverlay.getWidth() - r[0]);
+                    bottom = Math.max(0, r[1] + root.getHeight() - dockBottom);
+                    break;
+                case DockView.POS_RIGHT:
+                    right = Math.max(0, r[0] + root.getWidth() - d[0]);
+                    bottom = Math.max(0, r[1] + root.getHeight() - dockBottom);
+                    break;
+                default:
+                    bottom = Math.max(0, r[1] + root.getHeight() - d[1]);
+            }
         }
-        if (top == lp.topMargin && bottom == lp.bottomMargin) return false;
+        if (top == lp.topMargin && bottom == lp.bottomMargin
+                && left == lp.leftMargin && right == lp.rightMargin) return false;
         lp.topMargin = top;
         lp.bottomMargin = bottom;
+        lp.leftMargin = left;
+        lp.rightMargin = right;
         splitPanel.setLayoutParams(lp);
         return true;
     }
@@ -365,7 +559,7 @@ public class CarActivity extends Activity {
         syncPanelInsets();
         handler.postDelayed(() -> {
             launchFreeformPanels();
-            ensureResizeHandles();
+            if (!isSplitMode()) ensureResizeHandles();
         }, 150); // let the new margins lay out before reading panel bounds
     }
 
@@ -469,29 +663,86 @@ public class CarActivity extends Activity {
     }
 
     /**
-     * App grid shown as an overlay window. A Dialog would be hidden behind the freeform
-     * panels, because CarActivity itself is not in the foreground. Tapping an app opens it
-     * in a freeform window filling the whole panel area (so it is not cut off by the dock).
+     * App grid with a search field, shown as an overlay window. A Dialog would be hidden behind the
+     * panels, because CarActivity itself is not in the foreground. Tapping an app opens it in a
+     * freeform window filling the whole panel area (so it is not cut off by the dock).
+     * The window only becomes focusable (so the keyboard can attach) once the search field is tapped.
      */
     private void showAppDrawerPopup() {
         if (appDrawerView != null) { dismissAppDrawer(); return; }
         if (wm == null) return;
         final List<FreeformLauncher.AppInfo> apps = FreeformLauncher.findAllApps(this);
+        final List<FreeformLauncher.AppInfo> shown = new java.util.ArrayList<>(apps);
         final Rect content = contentBounds();
 
-        android.widget.FrameLayout frame = new android.widget.FrameLayout(this);
+        final android.widget.FrameLayout frame = new android.widget.FrameLayout(this) {
+            @Override public boolean dispatchKeyEvent(android.view.KeyEvent e) {
+                if (e.getKeyCode() == android.view.KeyEvent.KEYCODE_BACK) {
+                    if (e.getAction() == android.view.KeyEvent.ACTION_UP) dismissAppDrawer();
+                    return true;
+                }
+                return super.dispatchKeyEvent(e);
+            }
+        };
         frame.setBackgroundColor(0xF2000000);
         frame.setOnClickListener(v -> dismissAppDrawer());
 
-        android.widget.GridView grid = new android.widget.GridView(this);
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+
+        // --- Search field ---
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        android.graphics.drawable.GradientDrawable barBg = new android.graphics.drawable.GradientDrawable();
+        barBg.setColor(0xFF2A2A2A);
+        barBg.setCornerRadius(dp(28));
+        bar.setBackground(barBg);
+        bar.setPadding(dp(18), 0, dp(10), 0);
+
+        ImageView mag = new ImageView(this);
+        mag.setImageResource(android.R.drawable.ic_menu_search);
+        mag.setColorFilter(0xFFFFFFFF);
+        bar.addView(mag, new LinearLayout.LayoutParams(dp(26), dp(26)));
+
+        final android.widget.EditText search = new android.widget.EditText(this);
+        search.setBackground(null);
+        search.setHint("Search apps");
+        search.setHintTextColor(0xCCFFFFFF);
+        search.setTextColor(0xFFFFFFFF);
+        search.setTextSize(20f);
+        search.setSingleLine(true);
+        search.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        search.setPadding(dp(14), 0, dp(8), 0);
+        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f);
+        bar.addView(search, searchLp);
+
+        final TextView clear = new TextView(this);
+        clear.setText("✕");
+        clear.setTextColor(0xFFFFFFFF);
+        clear.setTextSize(20f);
+        clear.setGravity(Gravity.CENTER);
+        clear.setVisibility(View.GONE);
+        clear.setOnClickListener(v -> search.setText(""));
+        bar.addView(clear, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(56));
+        barLp.setMargins(dp(24), dp(14), dp(24), dp(2));
+        column.addView(bar, barLp);
+
+        // --- Grid ---
+        final android.widget.GridView grid = new android.widget.GridView(this);
         grid.setNumColumns(Math.max(4, Math.min(10, content.width() / dp(130))));
         grid.setStretchMode(android.widget.GridView.STRETCH_COLUMN_WIDTH);
         grid.setVerticalSpacing(dp(8));
-        grid.setPadding(dp(16), dp(16), dp(16), dp(16));
+        grid.setPadding(dp(16), dp(12), dp(16), dp(16));
         grid.setClipToPadding(false);
-        grid.setAdapter(new android.widget.BaseAdapter() {
-            @Override public int getCount() { return apps.size(); }
-            @Override public Object getItem(int p) { return apps.get(p); }
+        final android.widget.BaseAdapter adapter = new android.widget.BaseAdapter() {
+            @Override public int getCount() { return shown.size(); }
+            @Override public Object getItem(int p) { return shown.get(p); }
             @Override public long getItemId(int p) { return p; }
             @Override public View getView(int pos, View cv, android.view.ViewGroup parent) {
                 LinearLayout cell = new LinearLayout(CarActivity.this);
@@ -499,11 +750,11 @@ public class CarActivity extends Activity {
                 cell.setGravity(Gravity.CENTER);
                 cell.setPadding(dp(4), dp(10), dp(4), dp(10));
                 ImageView icon = new ImageView(CarActivity.this);
-                icon.setImageDrawable(apps.get(pos).icon);
+                icon.setImageDrawable(shown.get(pos).icon);
                 icon.setLayoutParams(new LinearLayout.LayoutParams(dp(56), dp(56)));
                 cell.addView(icon);
                 TextView label = new TextView(CarActivity.this);
-                label.setText(apps.get(pos).label);
+                label.setText(shown.get(pos).label);
                 label.setTextColor(0xFFFFFFFF);
                 label.setTextSize(14f);
                 label.setMaxLines(1);
@@ -517,20 +768,59 @@ public class CarActivity extends Activity {
                 cell.addView(label);
                 return cell;
             }
-        });
-        grid.setOnItemClickListener((parent, v, pos, id) -> {
-            String pkg = apps.get(pos).packageName;
+        };
+        grid.setAdapter(adapter);
+        final java.util.function.Consumer<String> open = pkg -> {
             dismissAppDrawer();
+            if (isSplitMode()) {
+                // Native split screen: the app takes the second half; it is not made the saved media app.
+                lastOwnLaunchMs = android.os.SystemClock.uptimeMillis();
+                if (FreeformLauncher.launchSplit(this, pkg, true)) return;
+            }
             if (!FreeformLauncher.launch(this, pkg, content, true)) {
                 Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
                 if (i != null) startActivity(i);
             }
-        });
-        frame.addView(grid, new android.widget.FrameLayout.LayoutParams(
+        };
+        grid.setOnItemClickListener((parent, v, pos, id) -> open.accept(shown.get(pos).packageName));
+        column.addView(grid, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        frame.addView(column, new android.widget.FrameLayout.LayoutParams(
                 android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
                 android.widget.FrameLayout.LayoutParams.MATCH_PARENT));
 
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+        final TextView none = new TextView(this);
+        none.setText("No apps match");
+        none.setTextColor(0xFFFFFFFF);
+        none.setTextSize(20f);
+        none.setVisibility(View.GONE);
+        android.widget.FrameLayout.LayoutParams noneLp = new android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+        frame.addView(none, noneLp);
+
+        // --- Filtering ---
+        search.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void afterTextChanged(android.text.Editable s) {
+                String q = s.toString().trim().toLowerCase(Locale.getDefault());
+                shown.clear();
+                for (FreeformLauncher.AppInfo app : apps) {
+                    if (q.isEmpty() || String.valueOf(app.label).toLowerCase(Locale.getDefault()).contains(q))
+                        shown.add(app);
+                }
+                adapter.notifyDataSetChanged();
+                none.setVisibility(shown.isEmpty() ? View.VISIBLE : View.GONE);
+                clear.setVisibility(q.isEmpty() ? View.GONE : View.VISIBLE);
+            }
+        });
+        search.setOnEditorActionListener((v, actionId, ev) -> {
+            if (!shown.isEmpty()) open.accept(shown.get(0).packageName); // Enter / Search opens the first match
+            return true;
+        });
+
+        final WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 content.width(), content.height(),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -540,6 +830,25 @@ public class CarActivity extends Activity {
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.x = content.left;
         lp.y = content.top;
+        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+                | WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN;
+
+        // Make the window focusable the first time the search field is touched so the keyboard can attach.
+        search.setOnTouchListener((v, ev) -> {
+            if (ev.getAction() == android.view.MotionEvent.ACTION_DOWN
+                    && (lp.flags & WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) != 0) {
+                lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+                try { wm.updateViewLayout(frame, lp); } catch (Exception ignored) { }
+                search.requestFocus();
+                handler.postDelayed(() -> {
+                    android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager)
+                            getSystemService(INPUT_METHOD_SERVICE);
+                    if (imm != null) imm.showSoftInput(search, 0);
+                }, 150);
+            }
+            return false;
+        });
+
         appDrawerView = frame;
         wm.addView(frame, lp);
     }
@@ -552,7 +861,9 @@ public class CarActivity extends Activity {
             @Override public void onPrayerTap()  { showPrayerPopup(); }
         });
         dock.setLaunchListener(pkg -> {
-            if (splitPanel.getMode() != SplitPanelLayout.MODE_SINGLE) {
+            if (isSplitMode()) {
+                launchMediaInSplit(pkg);
+            } else if (splitPanel.getMode() != SplitPanelLayout.MODE_SINGLE) {
                 // Kill the previous media app before launching the new one so only one runs.
                 String prev = lastLaunchedMediaPkg;
                 if (!prev.isEmpty() && !prev.equals(pkg)) killMediaApp(prev);
@@ -624,10 +935,31 @@ public class CarActivity extends Activity {
         });
     }
 
+    boolean isSplitMode() { return "split".equals(cfg.panelMode) && cfg.panelCount == 2; }
+
+    /**
+     * Android split screen: open the first app, dock it with the accessibility "toggle split screen"
+     * action, then open the second app in the other half.
+     */
+    private void launchSplitPanels() {
+        String first  = cfg.swapPanels ? cfg.mediaPackage : cfg.mapPackage;
+        String second = cfg.swapPanels ? cfg.mapPackage : cfg.mediaPackage;
+        PanelWatchService svc = PanelWatchService.instance;
+        lastOwnLaunchMs = android.os.SystemClock.uptimeMillis();
+        FreeformLauncher.launchSplit(this, first, false);
+        if (svc == null || second.isEmpty()) return;
+        handler.postDelayed(() -> android.util.Log.d("GlassAuto.Freeform",
+                "toggleSplitScreen -> " + svc.toggleSplitScreen()), 1800);
+        handler.postDelayed(() -> FreeformLauncher.launchSplit(this, second, true), 3200);
+        // Move the divider to the saved ratio (some systems reopen the split at the last ratio used, not 50/50).
+        handler.postDelayed(this::applySavedSplitRatio, 6500);
+    }
+
     private void launchFreeformPanels() {
         lastLaunchedPanelCount = cfg.panelCount;
         lastLaunchedMapPkg     = cfg.mapPackage;
         lastLaunchedMediaPkg   = cfg.mediaPackage;
+        if (isSplitMode()) { launchSplitPanels(); return; }
 
         launchPanel1();
         if (cfg.panelCount >= 2 && cfg.autoStartMedia) {
@@ -968,10 +1300,87 @@ public class CarActivity extends Activity {
         } catch (Exception ignored) { }
     }
 
+    /** Width the apps share, in px: the display minus any side system bars. */
+    private int usableWidthPx() {
+        int w;
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            w = getWindowManager().getMaximumWindowMetrics().getBounds().width();
+        } else {
+            w = getResources().getDisplayMetrics().widthPixels;
+        }
+        int[] in = systemBarInsets();
+        return Math.max(1, w - in[4] - in[5]);
+    }
+
+    /**
+     * Presets for the first panel's share: {large, half, small}. The small share is whatever makes the
+     * narrow panel MIN_PANEL_DP wide on this screen (kept between 30% and 42%), so it is never too slim to use.
+     */
+    private float[] splitPresets() {
+        float small = Math.max(0.30f, Math.min(0.42f,
+                MIN_PANEL_DP * getResources().getDisplayMetrics().density / usableWidthPx()));
+        return new float[]{1f - small, 0.5f, small};
+    }
+
+    private boolean tooNarrow(float firstShare) {
+        float narrow = Math.min(firstShare, 1f - firstShare);
+        return narrow * usableWidthPx() < MIN_PANEL_DP * getResources().getDisplayMetrics().density * 0.8f;
+    }
+
+    /**
+     * Drags the system divider to the next preset, then checks where it really ended up: split screen
+     * snaps to its own positions, and some systems snap to a sliver. A preset that lands somewhere
+     * unusable, or on 50/50 anyway, is skipped from then on.
+     */
+    private void cycleSplitRatio(final int attempt) {
+        final PanelWatchService s = PanelWatchService.instance;
+        final float[] presets = splitPresets();
+        for (int k = 0; k < presets.length; k++) {
+            splitRatioState = (splitRatioState + 1) % presets.length;
+            if (presetOk[splitRatioState]) break;
+        }
+        final int idx = splitRatioState;
+        final float target = presets[idx];
+        final long dragMs = s == null ? -1L : s.dragDivider(target);
+        if (dragMs < 0) {
+            android.widget.Toast.makeText(this, "Split screen is not active", android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        handler.postDelayed(() -> {
+            float got = s.dividerFraction();
+            android.util.Log.d("GlassAuto.Freeform", "divider target=" + target + " got=" + got);
+            if (got < 0) return;
+            boolean sliver = tooNarrow(got);
+            boolean stuckOnHalf = idx != 1 && Math.abs(got - 0.5f) < 0.04f;
+            if (sliver || stuckOnHalf) {
+                presetOk[idx] = false;
+                if (attempt < 2) { cycleSplitRatio(attempt + 1); return; }
+                if (sliver) s.dragDivider(0.5f);
+                cfg.splitRatio = 0.5f;
+            } else {
+                cfg.splitRatio = got;
+            }
+            Config.save(this, cfg);
+        }, dragMs + 1200);
+    }
+
+    /** Moves the divider to the saved ratio when the split opens, never to a sliver. */
+    private void applySavedSplitRatio() {
+        final PanelWatchService s = PanelWatchService.instance;
+        if (s == null) return;
+        float small = splitPresets()[2];
+        final long ms = s.dragDivider(Math.max(small, Math.min(1f - small, cfg.splitRatio)));
+        handler.postDelayed(() -> {
+            float got = s.dividerFraction();
+            if (got >= 0 && tooNarrow(got)) s.dragDivider(0.5f);
+        }, Math.max(ms, 0L) + 1200);
+    }
+
     private void cycleRatio() {
         if (cfg.panelCount != 2) return;
-        splitRatioState = (splitRatioState + 1) % SPLIT_PRESETS.length;
-        float newRatio = SPLIT_PRESETS[splitRatioState];
+        if (isSplitMode()) { cycleSplitRatio(0); return; } // Android split screen: move the system divider
+        splitRatioState = (splitRatioState + 1) % splitPresets().length;
+        float newRatio = splitPresets()[splitRatioState];
         cfg.splitRatio = newRatio;
         layoutPending = true;
         Config.save(this, cfg);
@@ -1011,6 +1420,30 @@ public class CarActivity extends Activity {
         }
     };
 
+    /**
+     * Dock tap in native split screen: the tapped app takes over the media side. It is opened first, so
+     * the split never loses a side, and the app it replaces is stopped once it is out of sight.
+     * The map app (or the media app already showing) is just brought to the front.
+     */
+    private void launchMediaInSplit(final String pkg) {
+        final String prev = cfg.mediaPackage;
+        if (pkg.equals(cfg.mapPackage) || pkg.equals(prev)) {
+            Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+            if (i != null) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+                startActivity(i);
+            }
+            return;
+        }
+        cfg.mediaPackage = pkg;
+        lastLaunchedMediaPkg = pkg;
+        Config.save(this, cfg);
+        lastOwnLaunchMs = android.os.SystemClock.uptimeMillis();
+        FreeformLauncher.launchSplit(this, pkg, true);
+        handler.postDelayed(() -> killMediaApp(prev), 1500);
+        handler.postDelayed(this::scheduleAutoPlay, 2300);
+    }
+
     private void killMediaApp(String pkg) {
         if (pkg == null || pkg.isEmpty()) return;
         // Send STOP transport command so the app can teardown its foreground service
@@ -1047,12 +1480,13 @@ public class CarActivity extends Activity {
         }
     }
 
-    /** Returns the index of the preset in SPLIT_PRESETS closest to the given ratio. */
+    /** Returns the index of the splitPresets() entry closest to the given ratio. */
     private int closestPresetIdx(float ratio) {
         int best = 0;
-        float bestDiff = Math.abs(ratio - SPLIT_PRESETS[0]);
-        for (int i = 1; i < SPLIT_PRESETS.length; i++) {
-            float diff = Math.abs(ratio - SPLIT_PRESETS[i]);
+        final float[] presets = splitPresets();
+        float bestDiff = Math.abs(ratio - presets[0]);
+        for (int i = 1; i < presets.length; i++) {
+            float diff = Math.abs(ratio - presets[i]);
             if (diff < bestDiff) { bestDiff = diff; best = i; }
         }
         return best;
@@ -1239,7 +1673,7 @@ public class CarActivity extends Activity {
         android.app.ActivityOptions opts = android.app.ActivityOptions.makeBasic();
         opts.setLaunchBounds(contentBounds());
         positionResizeHandles();
-        startActivity(i, opts.toBundle());
+        startActivity(i, FreeformLauncher.freeformOptions(opts));
     }
 
     /** Called by CarSettingsActivity when it closes; CarActivity may not get onResume because it stays visible behind the panels. */
@@ -1274,6 +1708,10 @@ public class CarActivity extends Activity {
             cfg = Config.load(this);
             dock.setApps(cfg.dockApps, getPackageManager());
             dock.configureScale(cfg.uiScale);
+            if (!appliedDockName.equals(cfg.dockPosition)) { // changed in Settings
+                applyBarGeometry();
+                relayoutPanelsForDock();
+            }
         }
 
         int mode = cfg.panelCount == 1 ? SplitPanelLayout.MODE_SINGLE

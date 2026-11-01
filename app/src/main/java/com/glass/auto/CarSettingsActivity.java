@@ -103,6 +103,13 @@ public class CarSettingsActivity extends Activity {
         }
         addSpinner(root, scaleLabels, scaleSel, idx -> cfg.uiScale = scaleValues[idx]);
 
+        addSection(root, "Dock Position (also the dock icon button in the status bar)");
+        final String[] dockPos = {"bottom", "top", "left", "right"};
+        int dockSel = 0;
+        for (int i = 0; i < dockPos.length; i++) if (dockPos[i].equals(cfg.dockPosition)) dockSel = i;
+        addSpinner(root, new String[]{"Bottom (default)", "Top", "Left", "Right"}, dockSel,
+                idx -> cfg.dockPosition = dockPos[idx]);
+
         addSection(root, "Dock Apps (tap to toggle)");
         addDockAppsPicker(root, allApps);
 

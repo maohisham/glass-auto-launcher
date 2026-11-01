@@ -49,7 +49,7 @@ public class PanelWatchService extends AccessibilityService {
 
     private void checkWindows() {
         CarActivity car = CarActivity.instance;
-        if (car == null || car.isSettingsOpen() || stopping) return;
+        if (car == null || car.isSettingsOpen() || stopping || car.isSplitMode()) return;
         long now = SystemClock.uptimeMillis();
         if (now - car.lastOwnLaunchMs < AFTER_OWN_LAUNCH_MS) return;
         Set<String> watched = car.watchedPackages();
@@ -111,9 +111,121 @@ public class PanelWatchService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
+        // The launcher only covers the system bars while this service can stand in for their buttons.
+        CarActivity car = CarActivity.instance;
+        if (car != null) car.runOnUiThread(car::applyBarGeometry);
     }
 
     boolean isStopping() { return stopping; }
+
+    /**
+     * Drags the split-screen divider so the first app takes {@code firstFraction} of the screen
+     * (the system snaps it to its nearest allowed position). Returns the drag time in ms, or -1 if there is no divider.
+     */
+    long dragDivider(float firstFraction) {
+        Rect r = new Rect();
+        boolean found = false;
+        for (AccessibilityWindowInfo w : getWindows()) {
+            if (w.getType() == AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER) {
+                w.getBoundsInScreen(r);
+                found = true;
+                break;
+            }
+        }
+        if (!found || r.isEmpty()) return -1L;
+        Rect screen = new Rect();
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            screen.set(((android.view.WindowManager) getSystemService(WINDOW_SERVICE))
+                    .getMaximumWindowMetrics().getBounds());
+        } else {
+            android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+            screen.set(0, 0, dm.widthPixels, dm.heightPixels);
+        }
+        boolean sideBySide = r.height() > r.width(); // vertical divider = left/right split
+        android.graphics.Path p = new android.graphics.Path();
+        float sx = r.exactCenterX(), sy = r.exactCenterY();
+        p.moveTo(sx, sy);
+        float dist;
+        if (sideBySide) {
+            float tx = screen.left + screen.width() * firstFraction;
+            dist = Math.abs(tx - sx);
+            p.lineTo(tx, sy);
+        } else {
+            float ty = screen.top + screen.height() * firstFraction;
+            dist = Math.abs(ty - sy);
+            p.lineTo(sx, ty);
+        }
+        // Keep the drag well below fling speed: a fast release is read as "throw the divider to the edge".
+        long duration = (long) Math.max(700f, dist / 0.3f);
+        android.accessibilityservice.GestureDescription g = new android.accessibilityservice.GestureDescription.Builder()
+                .addStroke(new android.accessibilityservice.GestureDescription.StrokeDescription(p, 0, duration))
+                .build();
+        return dispatchGesture(g, null, null) ? duration : -1L;
+    }
+
+    /** The first app's share of the screen along the divider's axis (0..1), or -1 if there is no divider. */
+    float dividerFraction() {
+        Rect r = new Rect();
+        boolean found = false;
+        for (AccessibilityWindowInfo w : getWindows()) {
+            if (w.getType() == AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER) {
+                w.getBoundsInScreen(r);
+                found = true;
+                break;
+            }
+        }
+        if (!found || r.isEmpty()) return -1f;
+        Rect screen = new Rect();
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            screen.set(((android.view.WindowManager) getSystemService(WINDOW_SERVICE))
+                    .getMaximumWindowMetrics().getBounds());
+        } else {
+            android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+            screen.set(0, 0, dm.widthPixels, dm.heightPixels);
+        }
+        return r.height() > r.width()
+                ? (r.exactCenterX() - screen.left) / screen.width()
+                : (r.exactCenterY() - screen.top) / screen.height();
+    }
+
+    /**
+     * True when a system-UI bar along the bottom edge (the navigation bar) is drawn above the
+     * launcher's overlays. Such a bar takes the touches in its area, so an overlay placed under it
+     * would be visible but unclickable there.
+     */
+    boolean navBarAboveOverlays() {
+        int screenH;
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            screenH = ((android.view.WindowManager) getSystemService(WINDOW_SERVICE))
+                    .getMaximumWindowMetrics().getBounds().height();
+        } else {
+            screenH = getResources().getDisplayMetrics().heightPixels;
+        }
+        int ours = -1, sys = -1;
+        Rect r = new Rect();
+        for (AccessibilityWindowInfo w : getWindows()) {
+            if (w.getType() != AccessibilityWindowInfo.TYPE_SYSTEM) continue;
+            AccessibilityNodeInfo root = w.getRoot();
+            if (root == null) continue;
+            CharSequence pkg = root.getPackageName();
+            if (pkg == null) continue;
+            w.getBoundsInScreen(r);
+            if (getPackageName().contentEquals(pkg)) ours = Math.max(ours, w.getLayer());
+            else if ("com.android.systemui".contentEquals(pkg)
+                    && r.bottom >= screenH - 2 && r.height() <= screenH * 0.25f)
+                sys = Math.max(sys, w.getLayer());
+        }
+        return ours >= 0 && sys > ours;
+    }
+
+    /** Back / Home / Recents for the launcher's own buttons when it covers the system navigation bar. */
+    boolean navAction(int which) {
+        return performGlobalAction(which == 0 ? GLOBAL_ACTION_BACK
+                : which == 1 ? GLOBAL_ACTION_HOME : GLOBAL_ACTION_RECENTS);
+    }
+
+    /** Docks the foreground app into Android split screen (public accessibility action). */
+    boolean toggleSplitScreen() { return performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN); }
 
     /**
      * Force-stops each package through its App info screen, then runs {@code done}.

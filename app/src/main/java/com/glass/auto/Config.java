@@ -26,6 +26,7 @@ public class Config {
     public float  splitRatio  = 0.70f;     // panel1 fraction of total width
     public float  splitRatio2 = 0.50f;     // panel2 fraction of remaining width (3-panel)
     public boolean swapPanels = false;      // true = map on the right panel, media on the left
+    public String panelMode   = "freeform"; // "freeform" = positioned windows | "split" = Android split screen
 
     // Media
     public String mediaPackage = "";        // preferred media app package (empty = auto-detect active session)
@@ -36,6 +37,7 @@ public class Config {
     public List<String> dockApps = new ArrayList<>();
     public String dockPosition = "bottom";  // "bottom" | "right"
     public boolean dockAutoHide = false;
+    public boolean compactDock  = false;    // force the slim dock (otherwise it is used only where no system bar can hold the dock)
 
     // Speed
     public boolean showSpeed = true;
@@ -56,11 +58,13 @@ public class Config {
             j.put("split_ratio",    c.splitRatio);
             j.put("split_ratio2",   c.splitRatio2);
             j.put("swap_panels",    c.swapPanels);
+            j.put("panel_mode",     c.panelMode);
             j.put("media_package",    c.mediaPackage);
             j.put("auto_start_media", c.autoStartMedia);
             j.put("show_lyrics",      c.showLyrics);
             j.put("dock_position",  c.dockPosition);
             j.put("dock_auto_hide", c.dockAutoHide);
+            j.put("compact_dock",   c.compactDock);
             j.put("show_speed",       c.showSpeed);
             j.put("speed_unit",       c.speedUnit);
             j.put("speed_limit_kmh",  c.speedLimitKmh);
@@ -99,11 +103,13 @@ public class Config {
             c.splitRatio    = (float) j.optDouble("split_ratio", 0.70);
             c.splitRatio2   = (float) j.optDouble("split_ratio2", 0.50);
             c.swapPanels    = j.optBoolean("swap_panels", false);
+            c.panelMode     = j.optString("panel_mode", "freeform");
             c.mediaPackage    = j.optString("media_package", "");
             c.autoStartMedia  = j.optBoolean("auto_start_media", true);
             c.showLyrics      = j.optBoolean("show_lyrics", true);
             c.dockPosition  = j.optString("dock_position", "bottom");
             c.dockAutoHide  = j.optBoolean("dock_auto_hide", false);
+            c.compactDock   = j.optBoolean("compact_dock", false);
             c.showSpeed      = j.optBoolean("show_speed", true);
             c.speedUnit      = j.optString("speed_unit", "kmh");
             c.speedLimitKmh  = j.optInt("speed_limit_kmh", 0);

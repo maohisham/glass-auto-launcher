@@ -8,6 +8,52 @@
     android:paddingEnd="16dp"
     android:background="#CC000000">
 
+    <!-- Back / Home / Recents: shown only when this bar covers the system navigation bar (e.g. at the top of the Eonon) -->
+    <TextView
+        android:id="@+id/btn_nav_back"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:text="◀"
+        android:textColor="#FFFFFFFF"
+        android:textSize="20sp"
+        android:visibility="gone"
+        android:background="?android:attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true" />
+
+    <TextView
+        android:id="@+id/btn_nav_home"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:text="●"
+        android:textColor="#FFFFFFFF"
+        android:textSize="20sp"
+        android:visibility="gone"
+        android:background="?android:attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true" />
+
+    <TextView
+        android:id="@+id/btn_nav_recents"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:text="■"
+        android:textColor="#FFFFFFFF"
+        android:textSize="20sp"
+        android:visibility="gone"
+        android:background="?android:attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true" />
+
     <!-- Left spacer — pushes all controls to the right side -->
     <View android:layout_width="0dp" android:layout_height="0dp" android:layout_weight="1" />
 
@@ -41,6 +87,16 @@
         android:paddingEnd="8dp"
         android:paddingTop="4dp"
         android:paddingBottom="4dp"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:clickable="true"
+        android:focusable="true" />
+
+    <!-- Moves the dock: bottom → left → top → right -->
+    <com.glass.auto.DockPositionIcon
+        android:id="@+id/btn_dock_pos"
+        android:layout_width="44dp"
+        android:layout_height="34dp"
+        android:layout_marginStart="8dp"
         android:background="?android:attr/selectableItemBackgroundBorderless"
         android:clickable="true"
         android:focusable="true" />
