@@ -45,23 +45,39 @@ public class CarSettingsActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(48, 48, 48, 96);
         scroll.addView(root);
-        setContentView(scroll);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setBackgroundColor(0xFF0A0A0A);
+        page.addView(buildHeader(), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        page.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        setContentView(page);
 
         mapApps   = FreeformLauncher.findMapApps(this);
         mediaApps = FreeformLauncher.findMediaApps(this);
 
-        addSection(root, "Panel Layout");
+        addSection(root, "Layout Mode");
         addSpinner(root,
-                new String[]{"1 panel (map fullscreen)", "2 panels (map + media)", "3 panels (map + media + app)"},
-                cfg.panelCount - 1,
+                new String[]{"Split screen (Android multi-window, up to 2 apps)", "Freeform windows (1–3 panels)"},
+                "split".equals(cfg.panelMode) ? 0 : 1,
+                idx -> { cfg.panelMode = idx == 0 ? "split" : "freeform"; updateModeUi(); });
+
+        addSection(root, "Panel Layout");
+        if ("split".equals(cfg.panelMode) && cfg.panelCount > 2) cfg.panelCount = 2;
+        final String[] panelOpts = panelOptions();
+        panelLayoutSpinner = addSpinner(root, panelOpts, Math.min(panelOpts.length - 1, cfg.panelCount - 1),
                 idx -> cfg.panelCount = idx + 1);
 
         addSection(root, "Panel 1 — Map App");
         addAppSpinner(root, mapApps, cfg.mapPackage, pkg -> cfg.mapPackage = pkg);
 
+        int panel3From = root.getChildCount();
         addSection(root, "Panel 3 App (3-panel mode only)");
         List<FreeformLauncher.AppInfo> allApps = FreeformLauncher.findAllApps(this);
         addAppSpinner(root, allApps, cfg.panel3Package, pkg -> cfg.panel3Package = pkg);
+        for (int i = panel3From; i < root.getChildCount(); i++) panel3Views.add(root.getChildAt(i));
+        for (View v : panel3Views) v.setVisibility("split".equals(cfg.panelMode) ? View.GONE : View.VISIBLE);
 
         addSection(root, "Media App (empty = auto-detect)");
         addAppSpinner(root, mediaApps, cfg.mediaPackage, pkg -> cfg.mediaPackage = pkg);
@@ -116,10 +132,57 @@ public class CarSettingsActivity extends Activity {
         addSection(root, "Freeform Window Support");
         addFreeformButton(root);
 
+    }
+
+    /** Fixed bar above the scrolling list: Close (discard) on the left, Save on the right. */
+    private View buildHeader() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        bar.setBackgroundColor(0xFF1A1A1A);
+        bar.setPadding(24, 12, 24, 12);
+
+        Button close = new Button(this);
+        close.setText("✕ Close");
+        close.setAllCaps(false);
+        close.setOnClickListener(v -> finish());
+        bar.addView(close);
+
+        TextView title = new TextView(this);
+        title.setText("Settings");
+        title.setTextColor(0xFFFFFFFF);
+        title.setTextSize(18);
+        title.setGravity(android.view.Gravity.CENTER);
+        bar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
         Button save = new Button(this);
-        save.setText("Save & Close");
+        save.setText("Save");
+        save.setAllCaps(false);
         save.setOnClickListener(v -> { saveConfig(); finish(); });
-        root.addView(save);
+        bar.addView(save);
+        return bar;
+    }
+
+    private Spinner panelLayoutSpinner;
+    private final List<View> panel3Views = new ArrayList<>();
+
+    /** Native split screen holds at most two apps, so the 3-panel choice and the panel 3 app only apply to freeform. */
+    private String[] panelOptions() {
+        return "split".equals(cfg.panelMode)
+                ? new String[]{"1 app (map fullscreen)", "2 apps (map + media)"}
+                : new String[]{"1 panel (map fullscreen)", "2 panels (map + media)", "3 panels (map + media + app)"};
+    }
+
+    private void updateModeUi() {
+        if (panelLayoutSpinner == null) return;
+        boolean split = "split".equals(cfg.panelMode);
+        if (split && cfg.panelCount > 2) cfg.panelCount = 2;
+        String[] options = panelOptions();
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, options);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        panelLayoutSpinner.setAdapter(adapter);
+        panelLayoutSpinner.setSelection(Math.max(0, Math.min(options.length - 1, cfg.panelCount - 1)));
+        for (View v : panel3Views) v.setVisibility(split ? View.GONE : View.VISIBLE);
     }
 
     private void addSection(ViewGroup parent, String label) {
@@ -159,7 +222,7 @@ public class CarSettingsActivity extends Activity {
         parent.addView(spinner);
     }
 
-    private void addSpinner(ViewGroup parent, String[] options, int sel, IntCallback cb) {
+    private Spinner addSpinner(ViewGroup parent, String[] options, int sel, IntCallback cb) {
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_item, options);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
@@ -171,6 +234,7 @@ public class CarSettingsActivity extends Activity {
             @Override public void onNothingSelected(AdapterView<?> p) { }
         });
         parent.addView(spinner);
+        return spinner;
     }
 
     private void addSwitch(ViewGroup parent, boolean initial, BoolCallback cb) {

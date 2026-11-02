@@ -38,6 +38,26 @@ public class SetupActivity extends Activity {
         setContentView(scroll);
 
         buildUI();
+        if (!PermissionHelper.hasNotificationListener(this) && PermissionHelper.isRestrictedSettings(this)) {
+            showRestrictedDialog();
+        }
+    }
+
+    /** Android 13+ greys out Notification access for sideloaded apps until "Allow restricted settings" is on. */
+    private void showRestrictedDialog() {
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Allow restricted settings")
+            .setMessage("Android blocks Notification access for apps installed from outside an app store, "
+                + "so the switch will look greyed out. Allow it once:\n\n"
+                + "1. Tap \"Open App info\".\n"
+                + "2. Tap the ⋮ menu (top right) → \"Allow restricted settings\", then confirm.\n"
+                + "3. Come back here and tap \"Open Settings\" again.\n\n"
+                + "No ⋮ menu? Tap \"Continue\" and try to switch Glass Auto on first. "
+                + "Android then shows a restricted-setting notice, and the menu appears in App info.")
+            .setPositiveButton("Open App info", (d, w) -> PermissionHelper.openAppInfo(this))
+            .setNeutralButton("Continue", (d, w) -> PermissionHelper.requestNotificationListener(this))
+            .setNegativeButton("Later", null)
+            .show();
     }
 
     @Override
@@ -73,9 +93,14 @@ public class SetupActivity extends Activity {
             listenerOk,
             "2  Notification access",
             "Required to read the currently playing track from any media app (Spotify, YouTube Music, etc.).\n\n"
-            + "On the next screen: find \"Glass Auto\" and enable it.",
+            + "On the next screen: find \"Glass Auto\" and enable it."
+            + (!listenerOk && PermissionHelper.isRestrictedSettings(this)
+                ? "\n\n⚠ Android is blocking this for sideloaded apps. Tap below for the fix." : ""),
             "Open Settings",
-            listenerOk ? null : v -> PermissionHelper.requestNotificationListener(this)
+            listenerOk ? null : v -> {
+                if (PermissionHelper.isRestrictedSettings(this)) showRestrictedDialog();
+                else PermissionHelper.requestNotificationListener(this);
+            }
         );
 
         // --- Step 3: Location ---

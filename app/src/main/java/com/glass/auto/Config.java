@@ -35,6 +35,7 @@ public class Config {
 
     // Dock
     public List<String> dockApps = new ArrayList<>();
+    public boolean dockDefaultsApplied = false; // the default dock list has been filled in once
     public String dockPosition = "bottom";  // "bottom" | "right"
     public boolean dockAutoHide = false;
     public boolean compactDock  = false;    // force the slim dock (otherwise it is used only where no system bar can hold the dock)
@@ -65,6 +66,7 @@ public class Config {
             j.put("dock_position",  c.dockPosition);
             j.put("dock_auto_hide", c.dockAutoHide);
             j.put("compact_dock",   c.compactDock);
+            j.put("dock_defaults_applied", c.dockDefaultsApplied);
             j.put("show_speed",       c.showSpeed);
             j.put("speed_unit",       c.speedUnit);
             j.put("speed_limit_kmh",  c.speedLimitKmh);
@@ -85,6 +87,12 @@ public class Config {
     }
 
     public static Config load(Context ctx) {
+        Config c = read(ctx);
+        applyDockDefaults(ctx, c);
+        return c;
+    }
+
+    private static Config read(Context ctx) {
         Config c = new Config();
         try {
             File dir = ctx.getExternalFilesDir(null);
@@ -110,6 +118,7 @@ public class Config {
             c.dockPosition  = j.optString("dock_position", "bottom");
             c.dockAutoHide  = j.optBoolean("dock_auto_hide", false);
             c.compactDock   = j.optBoolean("compact_dock", false);
+            c.dockDefaultsApplied = j.optBoolean("dock_defaults_applied", false);
             c.showSpeed      = j.optBoolean("show_speed", true);
             c.speedUnit      = j.optString("speed_unit", "kmh");
             c.speedLimitKmh  = j.optInt("speed_limit_kmh", 0);
@@ -124,5 +133,39 @@ public class Config {
             Log.w(TAG, "config read failed", e);
         }
         return c;
+    }
+
+    /** First-run dock: these apps, in this order, for whichever are installed. Missing ones are skipped. */
+    private static final String[] DEFAULT_DOCK = {
+        "com.google.android.apps.maps",
+        "app.morphe.android.apps.youtube.music",
+        "com.google.android.apps.dynamite",     // Google Chat
+        "com.ilv.vradio",
+    };
+
+    private static void applyDockDefaults(Context ctx, Config c) {
+        if (c.dockDefaultsApplied) return;
+        if (!c.dockApps.isEmpty()) { c.dockDefaultsApplied = true; return; }
+        android.content.pm.PackageManager pm = ctx.getPackageManager();
+        for (String pkg : DEFAULT_DOCK) {
+            String found = installed(pm, pkg) ? pkg : null;
+            // Morphe builds are patched YT Music apps; match any app.morphe.* YT Music package name.
+            if (found == null && pkg.equals("app.morphe.android.apps.youtube.music")) {
+                for (android.content.pm.ApplicationInfo ai : pm.getInstalledApplications(0)) {
+                    if (ai.packageName.startsWith("app.morphe.") && ai.packageName.contains("youtube.music")) {
+                        found = ai.packageName;
+                        break;
+                    }
+                }
+            }
+            if (found != null) c.dockApps.add(found);
+        }
+        // Stay unset when nothing was found, so the defaults are retried once the apps are installed.
+        if (!c.dockApps.isEmpty()) { c.dockDefaultsApplied = true; save(ctx, c); }
+    }
+
+    private static boolean installed(android.content.pm.PackageManager pm, String pkg) {
+        try { pm.getApplicationInfo(pkg, 0); return true; }
+        catch (android.content.pm.PackageManager.NameNotFoundException e) { return false; }
     }
 }

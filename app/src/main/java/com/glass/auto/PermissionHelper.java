@@ -79,4 +79,26 @@ public class PermissionHelper {
     public static boolean allGranted(Activity ctx) {
         return hasOverlay(ctx) && hasNotificationListener(ctx) && hasLocation(ctx);
     }
+
+    /**
+     * True when Android 13+ is blocking sensitive settings (Notification access, Accessibility) for this
+     * app because it was sideloaded. Always false below Android 13, or if the state can't be read.
+     */
+    public static boolean isRestrictedSettings(Activity ctx) {
+        if (Build.VERSION.SDK_INT < 33) return false;
+        try {
+            android.app.AppOpsManager ops = ctx.getSystemService(android.app.AppOpsManager.class);
+            int mode = ops.unsafeCheckOpNoThrow("android:access_restricted_settings",
+                    android.os.Process.myUid(), ctx.getPackageName());
+            return mode != android.app.AppOpsManager.MODE_ALLOWED;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Opens this app's system info page, where "Allow restricted settings" lives in the ⋮ menu. */
+    public static void openAppInfo(Activity ctx) {
+        ctx.startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:" + ctx.getPackageName())));
+    }
 }

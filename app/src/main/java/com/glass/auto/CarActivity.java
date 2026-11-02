@@ -861,9 +861,9 @@ public class CarActivity extends Activity {
             @Override public void onPrayerTap()  { showPrayerPopup(); }
         });
         dock.setLaunchListener(pkg -> {
-            if (isSplitMode()) {
+            if (isSplitMode() && cfg.panelCount >= 2) {
                 launchMediaInSplit(pkg);
-            } else if (splitPanel.getMode() != SplitPanelLayout.MODE_SINGLE) {
+            } else if (!isSplitMode() && splitPanel.getMode() != SplitPanelLayout.MODE_SINGLE) {
                 // Kill the previous media app before launching the new one so only one runs.
                 String prev = lastLaunchedMediaPkg;
                 if (!prev.isEmpty() && !prev.equals(pkg)) killMediaApp(prev);
@@ -935,7 +935,8 @@ public class CarActivity extends Activity {
         });
     }
 
-    boolean isSplitMode() { return "split".equals(cfg.panelMode) && cfg.panelCount == 2; }
+    /** Native split screen layout (it holds at most two apps; one app just opens fullscreen). */
+    boolean isSplitMode() { return "split".equals(cfg.panelMode); }
 
     /**
      * Android split screen: open the first app, dock it with the accessibility "toggle split screen"
@@ -946,6 +947,10 @@ public class CarActivity extends Activity {
         String second = cfg.swapPanels ? cfg.mapPackage : cfg.mediaPackage;
         PanelWatchService svc = PanelWatchService.instance;
         lastOwnLaunchMs = android.os.SystemClock.uptimeMillis();
+        if (cfg.panelCount < 2) { // one app: the map, fullscreen — there is no split to set up
+            FreeformLauncher.launchSplit(this, cfg.mapPackage, false);
+            return;
+        }
         FreeformLauncher.launchSplit(this, first, false);
         if (svc == null || second.isEmpty()) return;
         handler.postDelayed(() -> android.util.Log.d("GlassAuto.Freeform",
@@ -1903,6 +1908,8 @@ public class CarActivity extends Activity {
         addPopupTitle(root, "Waktu Solat");
         if (!data.zoneName.isEmpty())  addPopupSub(root, "📍 " + data.zoneName);
         if (!data.hijriDate.isEmpty()) addPopupSub(root, "🗓 " + data.hijriDate);
+        String cd = popupCountdown(data.nextTime);
+        if (!cd.isEmpty()) addPopupSub(root, "Next: " + data.nextPrayer + " — " + cd);
         addPopupDivider(root);
 
         String[][] rows = {
@@ -1919,12 +1926,6 @@ public class CarActivity extends Activity {
             boolean isCurrent = name.equals(data.currentPrayer);
             boolean isNext    = name.equals(data.nextPrayer);
             addPrayerRow(root, name, popupTo12h(raw), isCurrent, isNext);
-        }
-
-        addPopupDivider(root);
-        String cd = popupCountdown(data.nextTime);
-        if (!cd.isEmpty()) {
-            addPopupSub(root, "Next: " + data.nextPrayer + " — " + cd);
         }
 
         dialog.setContentView(scroll);
@@ -1947,6 +1948,9 @@ public class CarActivity extends Activity {
         } else {
             addPopupTitle(root, "Weather");
         }
+        LinearLayout aqiBox = new LinearLayout(this);
+        aqiBox.setOrientation(LinearLayout.VERTICAL);
+        root.addView(aqiBox);
         addPopupDivider(root);
 
         TextView loadingTv = new TextView(this);
@@ -1963,6 +1967,7 @@ public class CarActivity extends Activity {
         weather.fetchForecast(forecast -> {
             if (!dialog.isShowing()) return;
             root.removeView(loadingTv);
+            fillAqiInto(aqiBox, forecast);
             fillForecastInto(root, forecast);
         });
     }
@@ -1995,12 +2000,14 @@ public class CarActivity extends Activity {
             addPopupDivider(root);
         }
 
-        if (forecast.aqi != null) {
-            addPopupSection(root, "Air Quality");
-            addPopupSub(root, forecast.aqi.label() + " — AQI " + forecast.aqi.europeanAqi);
-            addPopupSub(root, String.format(Locale.US, "PM2.5: %.1f µg/m³   PM10: %.1f µg/m³",
-                    forecast.aqi.pm25, forecast.aqi.pm10));
-        }
+    }
+
+    /** Air quality sits in the popup header, right under the humidity line. */
+    private void fillAqiInto(LinearLayout box, WeatherManager.ForecastData forecast) {
+        if (forecast.aqi == null) return;
+        addPopupSub(box, "Air Quality: " + forecast.aqi.label() + " — AQI " + forecast.aqi.europeanAqi);
+        addPopupSub(box, String.format(Locale.US, "PM2.5: %.1f µg/m³   PM10: %.1f µg/m³",
+                forecast.aqi.pm25, forecast.aqi.pm10));
     }
 
     private View buildHourlyCell(WeatherManager.HourlyPoint p) {
