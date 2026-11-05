@@ -889,6 +889,10 @@ public class CarActivity extends Activity {
                  : SplitPanelLayout.MODE_SPLIT;
         splitPanel.setMode(mode);
         splitPanel.setRatios(cfg.splitRatio, cfg.splitRatio2);
+        if (isSplitMode()) { // Android draws its own divider between the two apps; ours would be a second one
+            findViewById(R.id.divider).setBackgroundColor(android.graphics.Color.TRANSPARENT);
+            findViewById(R.id.divider2).setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        }
 
         splitPanel.setOnRatioChangedListener((dividerIdx, r1, r2) -> {
             cfg.splitRatio  = r1;
@@ -942,7 +946,9 @@ public class CarActivity extends Activity {
      * Android split screen: open the first app, dock it with the accessibility "toggle split screen"
      * action, then open the second app in the other half.
      */
-    private void launchSplitPanels() {
+    private void launchSplitPanels() { launchSplitPanels(0); }
+
+    private void launchSplitPanels(int attempt) {
         String first  = cfg.swapPanels ? cfg.mediaPackage : cfg.mapPackage;
         String second = cfg.swapPanels ? cfg.mapPackage : cfg.mediaPackage;
         PanelWatchService svc = PanelWatchService.instance;
@@ -951,13 +957,43 @@ public class CarActivity extends Activity {
             FreeformLauncher.launchSplit(this, cfg.mapPackage, false);
             return;
         }
-        FreeformLauncher.launchSplit(this, first, false);
+        if (svc == null && !second.isEmpty() && attempt < 10) { // the service may still be binding right after it was enabled
+            handler.postDelayed(() -> launchSplitPanels(attempt + 1), 500);
+            return;
+        }
+        SplitDiagnostics.log("start: first=" + first + " second=" + second + " service=" + (svc != null));
+        SplitDiagnostics.log("launch first fullscreen -> " + FreeformLauncher.launchSplit(this, first, false));
+        if (svc == null && !second.isEmpty()) {
+            android.widget.Toast.makeText(this,
+                    "Turn on the Glass Auto accessibility service to open two apps side by side",
+                    android.widget.Toast.LENGTH_LONG).show();
+        }
         if (svc == null || second.isEmpty()) return;
-        handler.postDelayed(() -> android.util.Log.d("GlassAuto.Freeform",
-                "toggleSplitScreen -> " + svc.toggleSplitScreen()), 1800);
-        handler.postDelayed(() -> FreeformLauncher.launchSplit(this, second, true), 3200);
+        handler.postDelayed(() -> {
+            // A second toggle would close a split that is already open.
+            if (svc.hasDivider()) { SplitDiagnostics.log("split already open, toggle skipped"); return; }
+            SplitDiagnostics.log("toggleSplitScreen -> " + svc.toggleSplitScreen());
+        }, 1800);
+        handler.postDelayed(() -> {
+            SplitDiagnostics.log("divider before 2nd app: " + svc.hasDivider());
+            SplitDiagnostics.log("launch second adjacent -> " + FreeformLauncher.launchSplit(this, second, true));
+        }, 3200);
         // Move the divider to the saved ratio (some systems reopen the split at the last ratio used, not 50/50).
         handler.postDelayed(this::applySavedSplitRatio, 6500);
+        handler.postDelayed(() -> SplitDiagnostics.log("result: divider " + (svc.hasDivider() ? "present, split is open"
+                : "ABSENT, this system did not open a split")), 7500);
+    }
+
+    /** Pressing Home while no split is open brings the two apps back side by side straight away. */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent == null || !intent.hasCategory(Intent.CATEGORY_HOME)) return;
+        PanelWatchService s = PanelWatchService.instance;
+        if (!isSplitMode() || cfg.panelCount < 2 || settingsOpen || s == null) return;
+        if (android.os.SystemClock.uptimeMillis() - lastOwnLaunchMs < 20_000 || s.hasDivider()) return;
+        SplitDiagnostics.log("Home pressed with no split open -> reopening");
+        launchSplitPanels();
     }
 
     private void launchFreeformPanels() {

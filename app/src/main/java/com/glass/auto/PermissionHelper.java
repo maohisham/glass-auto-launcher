@@ -77,7 +77,8 @@ public class PermissionHelper {
 
     /** All runtime-grantable permissions are satisfied. */
     public static boolean allGranted(Activity ctx) {
-        return hasOverlay(ctx) && hasNotificationListener(ctx) && hasLocation(ctx);
+        return hasOverlay(ctx) && hasNotificationListener(ctx) && hasLocation(ctx)
+                && !needsAccessibility(ctx);
     }
 
     /**
@@ -100,5 +101,59 @@ public class PermissionHelper {
     public static void openAppInfo(Activity ctx) {
         ctx.startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 Uri.parse("package:" + ctx.getPackageName())));
+    }
+
+    /** True if Glass Auto's accessibility service is running or listed as enabled. */
+    public static boolean hasAccessibility(Activity ctx) {
+        if (PanelWatchService.instance != null) return true;
+        String flat = Settings.Secure.getString(
+                ctx.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+        if (TextUtils.isEmpty(flat)) return false;
+        ComponentName target = new ComponentName(ctx, PanelWatchService.class);
+        for (String entry : flat.split(":")) {
+            ComponentName cn = ComponentName.unflattenFromString(entry);
+            if (cn != null && cn.equals(target)) return true;
+        }
+        return false;
+    }
+
+    /** Opens the system Accessibility page, where the user switches Glass Auto on. */
+    public static void requestAccessibility(Activity ctx) {
+        ctx.startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+    }
+
+    private static android.content.SharedPreferences prefs(Activity ctx) {
+        return ctx.getSharedPreferences("setup", Activity.MODE_PRIVATE);
+    }
+
+    public static boolean accessibilitySkipped(Activity ctx) {
+        return prefs(ctx).getBoolean("skip_accessibility", false);
+    }
+
+    public static void skipAccessibility(Activity ctx) {
+        prefs(ctx).edit().putBoolean("skip_accessibility", true).apply();
+    }
+
+    /**
+     * Split screen mode needs the accessibility service (it opens the split and moves the divider).
+     * Without adb the app cannot switch it on itself, so setup asks the user, unless they skipped it.
+     */
+    public static boolean needsAccessibility(Activity ctx) {
+        if (!"split".equals(Config.load(ctx).panelMode) || accessibilitySkipped(ctx)) return false;
+        if (hasAccessibility(ctx)) return false;
+        tryEnableAccessibility(ctx);
+        return !hasAccessibility(ctx);
+    }
+
+    /** Lists the accessibility service as enabled when this app may write secure settings (adb-granted); otherwise a no-op. */
+    private static void tryEnableAccessibility(Activity ctx) {
+        try {
+            String me = new ComponentName(ctx, PanelWatchService.class).flattenToString();
+            String cur = Settings.Secure.getString(ctx.getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            Settings.Secure.putString(ctx.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                    TextUtils.isEmpty(cur) ? me : cur + ":" + me);
+            Settings.Secure.putInt(ctx.getContentResolver(), Settings.Secure.ACCESSIBILITY_ENABLED, 1);
+        } catch (SecurityException ignored) { } // no WRITE_SECURE_SETTINGS: the user switches it on in Settings
     }
 }

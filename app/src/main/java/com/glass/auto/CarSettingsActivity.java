@@ -62,6 +62,7 @@ public class CarSettingsActivity extends Activity {
                 new String[]{"Split screen (Android multi-window, up to 2 apps)", "Freeform windows (1–3 panels)"},
                 "split".equals(cfg.panelMode) ? 0 : 1,
                 idx -> { cfg.panelMode = idx == 0 ? "split" : "freeform"; updateModeUi(); });
+        addSplitReportButton(root);
 
         addSection(root, "Panel Layout");
         if ("split".equals(cfg.panelMode) && cfg.panelCount > 2) cfg.panelCount = 2;
@@ -242,6 +243,29 @@ public class CarSettingsActivity extends Activity {
         sw.setChecked(initial);
         sw.setOnCheckedChangeListener((v, on) -> cb.onSelected(on));
         parent.addView(sw);
+    }
+
+    /** Opens the plain-text split screen report (device support, accessibility state, last launch steps). */
+    private void addSplitReportButton(ViewGroup parent) {
+        Button b = new Button(this);
+        b.setText("Show split screen report");
+        b.setAllCaps(false);
+        b.setOnClickListener(v -> {
+            TextView t = new TextView(this);
+            t.setText(SplitDiagnostics.report(this, cfg));
+            t.setTypeface(android.graphics.Typeface.MONOSPACE);
+            t.setTextSize(12f);
+            t.setTextIsSelectable(true);
+            t.setPadding(32, 16, 32, 16);
+            ScrollView sv = new ScrollView(this);
+            sv.addView(t);
+            new android.app.AlertDialog.Builder(this)
+                .setTitle("Split screen report")
+                .setView(sv)
+                .setPositiveButton("Close", null)
+                .show();
+        });
+        parent.addView(b);
     }
 
     private void addFreeformButton(ViewGroup parent) {

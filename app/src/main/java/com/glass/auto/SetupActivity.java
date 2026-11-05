@@ -38,24 +38,28 @@ public class SetupActivity extends Activity {
         setContentView(scroll);
 
         buildUI();
-        if (!PermissionHelper.hasNotificationListener(this) && PermissionHelper.isRestrictedSettings(this)) {
-            showRestrictedDialog();
+        boolean listenerMissing = !PermissionHelper.hasNotificationListener(this);
+        if ((listenerMissing || PermissionHelper.needsAccessibility(this))
+                && PermissionHelper.isRestrictedSettings(this)) {
+            showRestrictedDialog(listenerMissing ? "Notification access" : "Accessibility",
+                    listenerMissing ? () -> PermissionHelper.requestNotificationListener(this)
+                                    : () -> PermissionHelper.requestAccessibility(this));
         }
     }
 
-    /** Android 13+ greys out Notification access for sideloaded apps until "Allow restricted settings" is on. */
-    private void showRestrictedDialog() {
+    /** Android 13+ greys out sensitive switches for sideloaded apps until "Allow restricted settings" is on. */
+    private void showRestrictedDialog(String what, Runnable proceed) {
         new android.app.AlertDialog.Builder(this)
             .setTitle("Allow restricted settings")
-            .setMessage("Android blocks Notification access for apps installed from outside an app store, "
+            .setMessage("Android blocks " + what + " for apps installed from outside an app store, "
                 + "so the switch will look greyed out. Allow it once:\n\n"
                 + "1. Tap \"Open App info\".\n"
                 + "2. Tap the ⋮ menu (top right) → \"Allow restricted settings\", then confirm.\n"
-                + "3. Come back here and tap \"Open Settings\" again.\n\n"
+                + "3. Come back here and tap the step's button again.\n\n"
                 + "No ⋮ menu? Tap \"Continue\" and try to switch Glass Auto on first. "
                 + "Android then shows a restricted-setting notice, and the menu appears in App info.")
             .setPositiveButton("Open App info", (d, w) -> PermissionHelper.openAppInfo(this))
-            .setNeutralButton("Continue", (d, w) -> PermissionHelper.requestNotificationListener(this))
+            .setNeutralButton("Continue", (d, w) -> proceed.run())
             .setNegativeButton("Later", null)
             .show();
     }
@@ -98,24 +102,52 @@ public class SetupActivity extends Activity {
                 ? "\n\n⚠ Android is blocking this for sideloaded apps. Tap below for the fix." : ""),
             "Open Settings",
             listenerOk ? null : v -> {
-                if (PermissionHelper.isRestrictedSettings(this)) showRestrictedDialog();
-                else PermissionHelper.requestNotificationListener(this);
+                Runnable open = () -> PermissionHelper.requestNotificationListener(this);
+                if (PermissionHelper.isRestrictedSettings(this)) showRestrictedDialog("Notification access", open);
+                else open.run();
             }
         );
 
-        // --- Step 3: Location ---
+        // --- Step 3: Accessibility (split screen only; adb can switch it on, but not every unit allows adb) ---
+        boolean split = "split".equals(Config.load(this).panelMode);
+        if (split) {
+            boolean accOk = PermissionHelper.hasAccessibility(this) || PermissionHelper.accessibilitySkipped(this);
+            boolean accRunning = PermissionHelper.hasAccessibility(this);
+            addStep(
+                accRunning,
+                "3  Accessibility (split screen)",
+                "Lets Glass Auto open the two apps side by side and move the divider. "
+                + "It only reads window positions.\n\n"
+                + "On the next screen: find \"Glass Auto\" and switch it on."
+                + (!accRunning && PermissionHelper.isRestrictedSettings(this)
+                    ? "\n\n⚠ Android is blocking this for sideloaded apps. Tap below for the fix." : ""),
+                "Open Accessibility",
+                accRunning ? null : v -> {
+                    Runnable open = () -> PermissionHelper.requestAccessibility(this);
+                    if (PermissionHelper.isRestrictedSettings(this)) showRestrictedDialog("Accessibility", open);
+                    else open.run();
+                }
+            );
+            if (!accOk) {
+                Button skip = new Button(this);
+                skip.setText("Skip — only one app will open");
+                skip.setOnClickListener(v -> { PermissionHelper.skipAccessibility(this); buildUI(); });
+                stepsContainer.addView(skip);
+            }
+        }
+
+        // --- Step 4: Location ---
         boolean locationOk = PermissionHelper.hasLocation(this);
         addStep(
             locationOk,
-            "3  Location (GPS speed)",
+            "4  Location (GPS speed)",
             "Used only to read GPS speed. No location data is stored or transmitted.",
             "Allow",
             locationOk ? null : v -> PermissionHelper.requestLocation(this, RC_LOCATION)
         );
 
-        // --- Step 4: Freeform (informational only) ---
-        boolean freeformOk = PermissionHelper.isFreeformEnabled(this);
-        addFreeformStep(freeformOk);
+        // --- Step 5: Freeform (informational only; split screen does not need it) ---
+        if (!split) addFreeformStep(PermissionHelper.isFreeformEnabled(this));
 
         // --- Done button ---
         if (PermissionHelper.allGranted(this)) {
@@ -162,7 +194,7 @@ public class SetupActivity extends Activity {
         row.setPadding(0, 0, 0, 32);
 
         TextView tv = new TextView(this);
-        tv.setText((detected ? "✓  " : "⚠  ") + "4  Freeform window mode");
+        tv.setText((detected ? "✓  " : "⚠  ") + "5  Freeform window mode");
         tv.setTextColor(detected ? 0xFF4CAF50 : 0xFFFF9800);
         tv.setTextSize(16f);
         row.addView(tv);

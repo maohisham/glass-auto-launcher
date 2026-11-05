@@ -26,7 +26,7 @@ public class Config {
     public float  splitRatio  = 0.70f;     // panel1 fraction of total width
     public float  splitRatio2 = 0.50f;     // panel2 fraction of remaining width (3-panel)
     public boolean swapPanels = false;      // true = map on the right panel, media on the left
-    public String panelMode   = "freeform"; // "freeform" = positioned windows | "split" = Android split screen
+    public String panelMode   = "split";    // "split" = Android split screen (default) | "freeform" = positioned windows
 
     // Media
     public String mediaPackage = "";        // preferred media app package (empty = auto-detect active session)
@@ -89,6 +89,7 @@ public class Config {
     public static Config load(Context ctx) {
         Config c = read(ctx);
         applyDockDefaults(ctx, c);
+        applyPanelDefaults(ctx, c);
         return c;
     }
 
@@ -111,7 +112,7 @@ public class Config {
             c.splitRatio    = (float) j.optDouble("split_ratio", 0.70);
             c.splitRatio2   = (float) j.optDouble("split_ratio2", 0.50);
             c.swapPanels    = j.optBoolean("swap_panels", false);
-            c.panelMode     = j.optString("panel_mode", "freeform");
+            c.panelMode     = j.optString("panel_mode", "split");
             c.mediaPackage    = j.optString("media_package", "");
             c.autoStartMedia  = j.optBoolean("auto_start_media", true);
             c.showLyrics      = j.optBoolean("show_lyrics", true);
@@ -167,5 +168,27 @@ public class Config {
     private static boolean installed(android.content.pm.PackageManager pm, String pkg) {
         try { pm.getApplicationInfo(pkg, 0); return true; }
         catch (android.content.pm.PackageManager.NameNotFoundException e) { return false; }
+    }
+
+    /**
+     * A fresh install has no map or media app chosen, which leaves split screen nothing to open.
+     * Fill in Google Maps and the first installed media app from the dock defaults (kept in memory only).
+     */
+    private static void applyPanelDefaults(Context ctx, Config c) {
+        android.content.pm.PackageManager pm = ctx.getPackageManager();
+        if (c.mapPackage.isEmpty() && installed(pm, "com.google.android.apps.maps")) {
+            c.mapPackage = "com.google.android.apps.maps";
+        }
+        if (c.mediaPackage.isEmpty() && "split".equals(c.panelMode)) {
+            for (String pkg : c.dockApps) {
+                if (!pkg.equals("com.google.android.apps.maps") && !pkg.equals("com.google.android.apps.dynamite")) {
+                    c.mediaPackage = pkg;
+                    return;
+                }
+            }
+            if (installed(pm, "com.google.android.apps.youtube.music")) {
+                c.mediaPackage = "com.google.android.apps.youtube.music";
+            }
+        }
     }
 }

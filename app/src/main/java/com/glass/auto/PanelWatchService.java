@@ -227,6 +227,37 @@ public class PanelWatchService extends AccessibilityService {
     /** Docks the foreground app into Android split screen (public accessibility action). */
     boolean toggleSplitScreen() { return performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN); }
 
+    /** True while the system split-screen divider window exists, i.e. two apps really are side by side. */
+    boolean hasDivider() {
+        for (AccessibilityWindowInfo w : getWindows()) {
+            if (w.getType() == AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER) return true;
+        }
+        return false;
+    }
+
+    /** One line per visible window (type, owner, bounds), for the split report. */
+    String describeWindows() {
+        StringBuilder sb = new StringBuilder();
+        Rect r = new Rect();
+        for (AccessibilityWindowInfo w : getWindows()) {
+            String type;
+            switch (w.getType()) {
+                case AccessibilityWindowInfo.TYPE_APPLICATION: type = "app"; break;
+                case AccessibilityWindowInfo.TYPE_SYSTEM: type = "system"; break;
+                case AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER: type = "DIVIDER"; break;
+                case AccessibilityWindowInfo.TYPE_INPUT_METHOD: type = "keyboard"; break;
+                case AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY: type = "overlay"; break;
+                default: type = "type" + w.getType();
+            }
+            String owner = "";
+            AccessibilityNodeInfo root = w.getRoot();
+            if (root != null && root.getPackageName() != null) owner = root.getPackageName().toString();
+            w.getBoundsInScreen(r);
+            sb.append("  ").append(type).append(' ').append(owner).append(' ').append(r.flattenToString()).append('\n');
+        }
+        return sb.length() == 0 ? "  (no windows visible)\n" : sb.toString();
+    }
+
     /**
      * Force-stops each package through its App info screen, then runs {@code done}.
      * Android only applies launch bounds to a freshly created task, so this is what lets a

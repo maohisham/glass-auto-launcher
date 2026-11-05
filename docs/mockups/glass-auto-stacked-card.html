@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Glass Auto stacked card mock-up</title>
+<style>
+:root{--bg:#0b0f0d;--panel:#141a17;--line:#26302b;--fg:#e8efe9;--dim:#8a9890;--green:#7be3a6;--deep:#0f2a1d;--map:#1b2a33;--road:#3a4d58;--lyricdim:#9db3a6}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;padding:24px max(16px,env(safe-area-inset-left))}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--dim);margin:0 0 28px;max-width:72ch}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:30px}
+figure{margin:0;min-width:0}
+figcaption{margin-top:10px;color:var(--dim);font-size:13px;max-width:62ch}
+figcaption b{color:var(--fg)}
+.screen{aspect-ratio:16/9;background:#05080a;border:2px solid var(--line);border-radius:14px;display:grid;grid-template-columns:40px 1fr;overflow:hidden}
+.rail{background:#0a0e0c;border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:12px;padding:10px 0}
+.rail i{width:18px;height:18px;border-radius:5px;background:var(--line)}.rail i.on{background:var(--green)}
+.main{display:grid;grid-template-columns:3fr 7fr;gap:8px;padding:8px;min-width:0}
+.main.small{grid-template-columns:7fr 3fr}
+.map{background:var(--map);border-radius:10px;position:relative;overflow:hidden}
+.map:before{content:"";position:absolute;inset:0;background:
+ linear-gradient(115deg,transparent 46%,var(--road) 46% 48%,transparent 48%),
+ linear-gradient(20deg,transparent 58%,var(--road) 58% 60%,transparent 60%)}
+.map span{position:absolute;left:8px;bottom:6px;font-size:10px;color:var(--dim)}
+.eta{position:absolute;left:8px;top:8px;background:var(--panel);border-radius:7px;padding:4px 8px;font-size:11px}
+.card{background:var(--panel);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.tag{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+/* the square picture the app draws, proportions of the real 640 px bitmap */
+.art{aspect-ratio:1.7/1;background:var(--deep);border-radius:6px;position:relative;container-type:inline-size;overflow:hidden}
+.art>*{position:absolute}
+.cd{left:3.75cqw;top:1.6cqw;font-weight:700;color:var(--green);font-size:5.2cqw;white-space:nowrap}
+.wx{left:3.75cqw;top:8.2cqw;color:#fff;font-size:3.4cqw;white-space:nowrap}
+.h1{left:0;right:0;top:12.8cqw;height:.5cqw;background:var(--green)}
+.tbl{left:3.75cqw;width:42cqw;top:15cqw;border-collapse:collapse;font-size:3.3cqw;color:#fff}
+.tbl th{text-align:left;font-weight:600;color:var(--lyricdim);font-size:3cqw;padding:0 0 1cqw;border-bottom:.5cqw solid var(--green)}
+.tbl th:last-child,.tbl td:last-child{text-align:right}
+.tbl td{padding:.9cqw 0;border-bottom:.25cqw solid #2c4a3a;white-space:nowrap}
+.tbl tr.n td{color:var(--green);font-weight:700}
+.vs{left:49.5cqw;top:14.5cqw;bottom:2cqw;width:.5cqw;background:var(--green)}
+.lyrics{left:52.5cqw;right:3.75cqw;top:14.5cqw;bottom:1.5cqw;overflow:hidden}
+.hd{font-size:2.8cqw;color:var(--lyricdim);margin-bottom:1.4cqw}
+.ly{font-size:3.5cqw;color:var(--lyricdim);line-height:1.15;margin-bottom:1.1cqw}
+.ly.now{color:var(--green);font-weight:700;font-size:4.1cqw}
+.msg{font-size:4.6cqw;color:#fff}
+.title{font-weight:700;font-size:13px;line-height:1.25}
+.artist{color:var(--dim);font-size:12px;line-height:1.3}
+.ctl{display:flex;justify-content:space-around;align-items:center;font-size:16px}
+.ctl .pp{background:var(--green);color:#05140c;border-radius:50%;width:26px;height:26px;display:grid;place-items:center;font-size:13px}
+.tm{display:flex;justify-content:space-between;font-size:10px;color:var(--dim)}
+.bar{height:3px;background:var(--line);border-radius:2px}.bar i{display:block;width:38%;height:100%;background:var(--green);border-radius:2px}
+.mini{flex-direction:row;align-items:center;gap:10px}
+.mini .th{width:40px;height:40px;border-radius:6px;flex:none;background:var(--deep);border:1px solid var(--line);filter:blur(2.5px)}
+.mini .title{font-size:12px}.mini .artist{font-size:11px}
+.note{margin-top:34px;padding:14px 16px;background:var(--panel);border-left:3px solid var(--green);border-radius:6px;max-width:78ch;color:var(--dim)}
+.note b{color:var(--fg)}.note p{margin:6px 0}
+.art.two{aspect-ratio:1.5/1}
+.art.two .colL{left:3.5cqw;width:52cqw;top:3cqw;bottom:2cqw;display:flex;flex-direction:column}
+.art.two .vs2{left:58cqw;top:3cqw;bottom:3cqw;width:.5cqw;background:var(--green)}
+.art.two .colR{left:61cqw;right:3.5cqw;top:3cqw}
+.cd2{font-weight:700;color:var(--green);font-size:5.4cqw;white-space:nowrap}
+.wx2{color:#fff;font-size:3.4cqw;margin:.8cqw 0 2cqw;white-space:nowrap}
+.tbl2{width:100%;border-collapse:collapse;font-size:3.3cqw;color:#fff}
+.tbl2 th{text-align:left;font-weight:600;color:var(--lyricdim);font-size:2.8cqw;padding:0 0 .8cqw;border-bottom:.5cqw solid var(--green)}
+.tbl2 th:last-child,.tbl2 td:last-child{text-align:right}
+.tbl2 td{padding:.9cqw 0;border-bottom:.25cqw solid #2c4a3a;white-space:nowrap}
+.tbl2 tr.n td{color:var(--green);font-weight:700}
+.tbl2 tr.c td:first-child:before{content:"● ";color:var(--green);font-size:2.4cqw}
+.ctlbox{margin-top:auto;border:1px dashed #3d5a4a;border-radius:6px;padding:1cqw 1.5cqw;display:flex;flex-direction:column;gap:.8cqw}
+.colc{gap:5px}
+.csep{height:2px;background:var(--green);border-radius:1px;margin:2px 0}
+.cbot{display:flex;flex-direction:column;gap:6px}
+.lyr{color:var(--green);font-weight:700;font-size:12px;line-height:1.3}
+</style></head><body>
+<h1>Glass Auto: stacked card — mock-up</h1>
+<p class="sub">Expanded: lyrics and controls on the left, countdown, weather and prayer table on the right. Two layouts: Maps at 30% with the card at 70% (card expanded), and Maps at 70% with the card at 30% (card collapsed). Hand-drawn, not a screenshot from the car.</p>
+
+<div class="grid">
+
+<figure>
+<div class="screen"><div class="rail"><i class="on"></i><i></i><i></i><i></i></div>
+<div class="main"><div class="map"><div class="eta">12 min · 6.4 km</div><span>Google Maps (native)</span></div>
+ <div class="card"><div class="tag">Glass Auto · expanded</div>
+  <div class="art two">
+   <div class="colL">
+     <div class="hd">Song title — Artist name</div>
+     <div class="ly">Look in your eyes, there is a fire</div>
+     <div class="ly now">Burning like a summer in the sun</div>
+     <div class="ly">Dancing till the morning comes</div>
+     <div class="ly">Hold me closer, do not let go</div>
+     <div class="ctlbox"><div class="bar"><i></i></div><div class="tm"><span>1:32</span><span>3:58</span></div>
+       <div class="ctl"><span>🔀</span><span>⏮</span><span class="pp">⏸</span><span>⏭</span><span>🔁</span></div></div>
+   </div>
+   <div class="vs2"></div>
+   <div class="colR">
+     <div class="cd2">Asar in 2h 15m</div>
+     <div class="wx2">🌤 31°C&nbsp; Petaling Jaya</div>
+     <table class="tbl2"><tr><th>Prayer</th><th>Time</th></tr>
+       <tr><td>Subuh</td><td>5:48 AM</td></tr><tr><td>Syuruk</td><td>7:00 AM</td></tr><tr class="c"><td>Zohor</td><td>1:10 PM</td></tr>
+       <tr class="n"><td>Asar</td><td>4:25 PM</td></tr><tr><td>Maghrib</td><td>7:15 PM</td></tr><tr><td>Isyak</td><td>8:27 PM</td></tr></table>
+   </div>
+  </div></div>
+</div></div>
+<figcaption><b>Expanded, Maps at 30%.</b> Right: the countdown to the next prayer, the weather, then the prayer table (current prayer marked, next prayer in green). Left: the song and the lyrics, with the line being sung in green, and the media controls underneath. The controls are drawn by Android Auto, so where exactly they land is its choice, and they may span both columns. The calibration photos will show it.</figcaption>
+</figure>
+
+
+<figure>
+<div class="screen"><div class="rail"><i class="on"></i><i></i><i></i><i></i></div>
+<div class="main small"><div class="map"><div class="eta">12 min · 6.4 km</div><span>Maps 70%</span></div>
+ <div class="card colc"><div class="tag">Glass Auto · collapsed</div>
+  <div class="ctop"><div class="title">Zohor 1:10 PM · Asar in 2h 15m</div><div class="artist">🌤 31°C&nbsp; Petaling Jaya</div></div>
+  <div class="csep"></div>
+  <div class="cbot"><div class="lyr">♪ Burning like a summer in the sun</div>
+   <div class="bar"><i></i></div>
+   <div class="ctl"><span>🔀</span><span>⏮</span><span class="pp">⏸</span><span>⏭</span><span>🔁</span></div></div>
+ </div>
+</div></div>
+<figcaption><b>Collapsed, Maps at 70%.</b> Top: the current prayer, the countdown to the next one, and the weather. A line, then below it the lyric being sung and the media controls. The card is narrow (30%), so the top text may be cut off. I wrapped it onto two lines here to show everything. Android Auto decides the real wrapping. The six-row prayer table only exists in the expanded card.</figcaption>
+</figure>
+
+
+</div>
+
+<div class="note">
+<p><b>Still true.</b> Android Auto decides the picture size and crop. I drew it square. The tall stacked layout should survive cropping better than the side-by-side one, but I can't be sure until it runs in the car.</p>
+</div>
+</body></html>
